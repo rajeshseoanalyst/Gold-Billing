@@ -21,7 +21,8 @@ import java.util.Locale
  * shop header with logo and GSTIN, customer, items, old gold, GST breakup, amount in words,
  * bank details, remarks, terms and signatures. Long invoices continue on more pages.
  */
-class InvoicePdf(private val shop: ShopSettings, private val shopName: String, private val logo: String) {
+class InvoicePdf(private val shop: ShopSettings, private val shopName: String, private val logo: String,
+                 private val photos: Map<String, String> = emptyMap()) {
 
     private val W = 595f
     private val H = 842f
@@ -178,7 +179,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             if (cu.address.isNotBlank()) add(cu.address)
             if (cu.gstin.isNotBlank()) add("GSTIN: ${cu.gstin}")
             if (cu.pan.isNotBlank()) add("PAN: ${cu.pan}")
-            IdProof.printable(cu).takeIf { it.isNotEmpty() }?.let { add(it.joinToString("  ·  ")) }
+            if (inv.kind != InvoiceType.ESTIMATE) IdProof.printable(cu).takeIf { it.isNotEmpty() }?.let { add(it.joinToString("  ·  ")) }
             Billing.stateLabel(cu.stateCode.ifBlank { shop.stateCode }).takeIf { it.isNotBlank() }?.let { add("State: $it") }
         }
         val pos = Billing.stateLabel(inv.customer.stateCode.ifBlank { shop.stateCode })
@@ -188,6 +189,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             if (inv.kind != InvoiceType.PURCHASE && pos.isNotBlank()) add("Place of supply: $pos")
             add("Payment: ${inv.payMode}")
             if (inv.createdByName.isNotBlank()) add("Billed by: ${inv.createdByName}")
+            if (inv.editCount > 0 && inv.editedAt > 0) add("Revised: ${date.format(Date(inv.editedAt))}")
         }
         val pBody = tp(9f)
         fun height(lines: List<String>) = 14f + lines.sumOf { block(it, 0f, 0f, colW - 16, pBody, draw = false).toDouble() + 2.0 }.toFloat()
@@ -219,19 +221,31 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
         y += 18f
     }
 
-    private fun row(cols: List<Col>, cells: List<String>, sub: String?, shaded: Boolean) {
+    private val thumb = 38f
+
+    private fun row(cols: List<Col>, cells: List<String>, sub: String?, shaded: Boolean, photoId: String = "") {
         val p = tp(8.5f)
         val subP = tp(7.5f, color = muted)
-        val descW = cols[1].w - 8
-        val h = maxOf(14f, block(cells[1], 0f, 0f, descW, p, false) + (sub?.let { block(it, 0f, 0f, descW, subP, false) + 2f } ?: 0f)) + 8f
+        val pic = photos[photoId]?.let { Images.decode(it) }
+        val shift = if (pic != null) thumb + 6f else 0f
+        val descW = cols[1].w - 8 - shift
+        val textH = block(cells[1], 0f, 0f, descW, p, false) + (sub?.let { block(it, 0f, 0f, descW, subP, false) + 2f } ?: 0f)
+        val h = maxOf(14f, textH, if (pic != null) thumb else 0f) + 8f
         ensure(h)
         if (shaded) rect(M, y, W - M, y + h, shade)
         var x = M
         cols.forEachIndexed { i, col ->
             if (i == 1) {
+                if (pic != null) {
+                    // Product photo, centre-cropped to a square.
+                    val side = minOf(pic.width, pic.height)
+                    val src = android.graphics.Rect((pic.width - side) / 2, (pic.height - side) / 2, (pic.width + side) / 2, (pic.height + side) / 2)
+                    c.drawBitmap(pic, src, RectF(x + 4, y + 4, x + 4 + thumb, y + 4 + thumb), Paint(Paint.FILTER_BITMAP_FLAG))
+                    c.drawRect(x + 4, y + 4, x + 4 + thumb, y + 4 + thumb, Paint().apply { style = Paint.Style.STROKE; color = line; strokeWidth = 0.6f })
+                }
                 var yy = y + 4
-                yy += block(cells[i], x + 4, yy, descW, p)
-                if (sub != null) block(sub, x + 4, yy + 2, descW, subP)
+                yy += block(cells[i], x + 4 + shift, yy, descW, p)
+                if (sub != null) block(sub, x + 4 + shift, yy + 2, descW, subP)
             } else if (col.right) text(cells[i], x + col.w - 4, y + 4, p, Paint.Align.RIGHT)
             else text(cells[i], x + 4, y + 4, p)
             x += col.w
@@ -254,7 +268,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
                 if (it.stoneCharges > 0) add("Stone ₹${money(it.stoneCharges)}")
                 add("Metal ₹${money(it.metalValue)}")
             }.joinToString(" · ")
-            row(cols, listOf("${i + 1}", desc, "${it.pcs}", g(it.grossWt), g(it.netWt), money(it.rate), money(it.making), money(it.amount)), sub, i % 2 == 1)
+            row(cols, listOf("${i + 1}", desc, "${it.pcs}", g(it.grossWt), g(it.netWt), money(it.rate), money(it.making), money(it.amount)), sub, i % 2 == 1, it.photo)
         }
         y += 8f
     }
@@ -265,7 +279,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
         tableHeader(cols, if (inv.kind == InvoiceType.PURCHASE) "ITEMS PURCHASED" else "OLD GOLD / SILVER RECEIVED IN EXCHANGE")
         inv.oldItems.forEachIndexed { i, o ->
             row(cols, listOf("${i + 1}", o.description.ifBlank { "Old ${o.metal.lowercase()}" } + " (${o.metal})", o.purity, g(o.grossWt),
-                if (o.lessPct > 0) "${o.lessPct}" else "-", g(o.netWt), money(o.rate), money(o.value)), null, i % 2 == 1)
+                if (o.lessPct > 0) "${o.lessPct}" else "-", g(o.netWt), money(o.rate), money(o.value)), null, i % 2 == 1, o.photo)
         }
         y += 8f
     }
@@ -357,16 +371,32 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             }
             y += 6f
         }
-        ensure(64f)
+        val sig = if (shop.showSignature) Images.decode(shop.signature) else null
+        val hasName = shop.signatoryName.isNotBlank()
+        ensure(if (sig != null) 80f else 64f)
         y += 8f
         text("For ${shopName.ifBlank { shop.name }}", W - M, y, tp(8.5f, true), Paint.Align.RIGHT)
-        y += 32f
         val sigW = 170f
+        if (sig != null) {
+            // Uploaded signature (or signature + stamp), fitted into the space above the right-hand line.
+            val boxH = 44f; val boxW = sigW - 10f
+            val scale = minOf(boxW / sig.width, boxH / sig.height)
+            val w = sig.width * scale; val h = sig.height * scale
+            val left = W - M - (sigW + w) / 2; val top = y + 14f + (boxH - h)
+            c.drawBitmap(sig, null, RectF(left, top, left + w, top + h), Paint(Paint.FILTER_BITMAP_FLAG))
+            y += 14f + boxH + 2f
+        } else y += 32f
         hline(y, ink, 0.6f, M, M + sigW)
         hline(y, ink, 0.6f, W - M - sigW, W - M)
         text(if (inv.kind == InvoiceType.PURCHASE) "Seller's signature" else "Customer's signature", M, y + 4, tp(8f, color = muted))
-        text("Authorised signatory", W - M, y + 4, tp(8f, color = muted), Paint.Align.RIGHT)
-        y += 22f
+        if (hasName) {
+            text(shop.signatoryName, W - M, y + 4, tp(8.5f, true), Paint.Align.RIGHT)
+            text(shop.signatoryTitle.ifBlank { "Authorised Signatory" }, W - M, y + 16, tp(8f, color = muted), Paint.Align.RIGHT)
+            y += 34f
+        } else {
+            text(shop.signatoryTitle.ifBlank { "Authorised Signatory" }, W - M, y + 4, tp(8f, color = muted), Paint.Align.RIGHT)
+            y += 22f
+        }
         if (shop.footerNote.isNotBlank() && inv.kind != InvoiceType.PURCHASE) {
             // The one-line thank-you may sit a little into the bottom margin rather than start a new page.
             if (y + 12f > H - 26f) { finishPage(); newPage() }
@@ -377,11 +407,11 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
 
     companion object {
         /** Builds the PDF in the app's cache folder and returns it. */
-        fun create(ctx: Context, inv: Invoice, shop: ShopSettings, shopName: String, logo: String): File {
+        fun create(ctx: Context, inv: Invoice, shop: ShopSettings, shopName: String, logo: String, photos: Map<String, String> = emptyMap()): File {
             val safe = inv.number.ifBlank { "invoice" }.replace(Regex("[^A-Za-z0-9-]+"), "_")
             val dir = File(ctx.cacheDir, "invoices").apply { mkdirs() }
             dir.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 86_400_000L }?.forEach { it.delete() }
-            return InvoicePdf(shop, shopName, logo).write(inv, File(dir, "$safe.pdf"))
+            return InvoicePdf(shop, shopName, logo, photos).write(inv, File(dir, "$safe.pdf"))
         }
 
     }

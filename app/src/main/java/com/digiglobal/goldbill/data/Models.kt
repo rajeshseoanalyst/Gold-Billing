@@ -64,7 +64,7 @@ fun DocumentSnapshot.toCustomer(): Customer = (data ?: emptyMap<String, Any>()).
 private fun SaleItem.toMap(): Map<String, Any> = mapOf(
     "description" to description, "metal" to metal, "purity" to purity, "hsn" to hsn, "huid" to huid, "pcs" to pcs,
     "grossWt" to grossWt, "stoneWt" to stoneWt, "wastagePct" to wastagePct, "rate" to rate,
-    "makingType" to makingType, "makingValue" to makingValue, "stoneCharges" to stoneCharges,
+    "makingType" to makingType, "makingValue" to makingValue, "stoneCharges" to stoneCharges, "photo" to photo,
     // stored for reading in other tools; recomputed on load
     "netWt" to netWt, "amount" to amount
 )
@@ -73,17 +73,17 @@ private fun Map<*, *>.toSaleItem() = SaleItem(
     description = s("description"), metal = s("metal").ifBlank { Metal.GOLD }, purity = s("purity"), hsn = s("hsn"),
     huid = s("huid"), pcs = i("pcs").coerceAtLeast(1), grossWt = d("grossWt"), stoneWt = d("stoneWt"),
     wastagePct = d("wastagePct"), rate = d("rate"), makingType = s("makingType").ifBlank { MakingType.PER_GRAM.code },
-    makingValue = d("makingValue"), stoneCharges = d("stoneCharges")
+    makingValue = d("makingValue"), stoneCharges = d("stoneCharges"), photo = s("photo")
 )
 
 private fun OldItem.toMap(): Map<String, Any> = mapOf(
     "description" to description, "metal" to metal, "purity" to purity, "grossWt" to grossWt,
-    "lessPct" to lessPct, "rate" to rate, "netWt" to netWt, "value" to value
+    "lessPct" to lessPct, "rate" to rate, "netWt" to netWt, "value" to value, "photo" to photo
 )
 
 private fun Map<*, *>.toOldItem() = OldItem(
     description = s("description"), metal = s("metal").ifBlank { Metal.GOLD }, purity = s("purity"),
-    grossWt = d("grossWt"), lessPct = d("lessPct"), rate = d("rate")
+    grossWt = d("grossWt"), lessPct = d("lessPct"), rate = d("rate"), photo = s("photo")
 )
 
 /** Invoice + its computed totals, so dashboards and exports don't recompute. */
@@ -97,6 +97,7 @@ fun Invoice.toMap(): Map<String, Any> {
         "discount" to discount, "gstRate" to gstRate, "includeGst" to includeGst, "interState" to interState,
         "payMode" to payMode, "amountPaid" to amountPaid, "remarks" to remarks, "terms" to terms,
         "createdBy" to createdBy, "createdByName" to createdByName, "status" to status, "cancelReason" to cancelReason,
+        "editedAt" to editedAt, "editedByName" to editedByName, "editCount" to editCount,
         "taxable" to t.taxable, "gst" to t.gst, "grandTotal" to t.grandTotal, "oldTotal" to t.oldTotal, "net" to t.net,
         "goldOut" to t.goldOut, "silverOut" to t.silverOut, "goldIn" to t.goldIn, "silverIn" to t.silverIn
     )
@@ -110,7 +111,8 @@ fun DocumentSnapshot.toInvoice(): Invoice = Invoice(
     discount = dbl("discount"), gstRate = dbl("gstRate", 3.0), includeGst = bool("includeGst", true),
     interState = bool("interState", false), payMode = getString("payMode") ?: "Cash", amountPaid = dbl("amountPaid"),
     remarks = str("remarks"), terms = str("terms"), createdBy = str("createdBy"), createdByName = str("createdByName"),
-    status = getString("status") ?: "active", cancelReason = str("cancelReason")
+    status = getString("status") ?: "active", cancelReason = str("cancelReason"),
+    editedAt = lng("editedAt"), editedByName = str("editedByName"), editCount = (getLong("editCount") ?: 0L).toInt()
 )
 
 fun ShopSettings.toMap(): Map<String, Any> = mapOf(
@@ -118,7 +120,8 @@ fun ShopSettings.toMap(): Map<String, Any> = mapOf(
     "stateCode" to stateCode, "pan" to pan, "bankName" to bankName, "accountNo" to accountNo, "ifsc" to ifsc,
     "upiId" to upiId, "terms" to terms, "footerNote" to footerNote, "gstRate" to gstRate,
     "invoicePrefix" to invoicePrefix, "purchasePrefix" to purchasePrefix, "estimatePrefix" to estimatePrefix,
-    "hsnGold" to hsnGold, "hsnSilver" to hsnSilver
+    "hsnGold" to hsnGold, "hsnSilver" to hsnSilver,
+    "signature" to signature, "signatoryName" to signatoryName, "signatoryTitle" to signatoryTitle, "showSignature" to showSignature
 )
 
 fun DocumentSnapshot.toShop(): ShopSettings = if (!exists()) ShopSettings() else ShopSettings(
@@ -128,7 +131,10 @@ fun DocumentSnapshot.toShop(): ShopSettings = if (!exists()) ShopSettings() else
     footerNote = getString("footerNote") ?: "", gstRate = dbl("gstRate", 3.0),
     invoicePrefix = getString("invoicePrefix") ?: "INV", purchasePrefix = getString("purchasePrefix") ?: "PUR",
     estimatePrefix = getString("estimatePrefix") ?: "EST",
-    hsnGold = getString("hsnGold") ?: "7113", hsnSilver = getString("hsnSilver") ?: "7113"
+    hsnGold = getString("hsnGold") ?: "7113", hsnSilver = getString("hsnSilver") ?: "7113",
+    signature = str("signature"), signatoryName = str("signatoryName"),
+    signatoryTitle = getString("signatoryTitle")?.ifBlank { null } ?: "Authorised Signatory",
+    showSignature = getBoolean("showSignature") ?: true
 )
 
 fun Rates.toMap(): Map<String, Any> = mapOf(

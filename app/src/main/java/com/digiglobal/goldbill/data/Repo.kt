@@ -36,6 +36,8 @@ object Repo {
     private fun invoices(orgId: String? = null) = orgDoc(orgId).collection("invoices")
     private fun customers() = orgDoc().collection("customers")
     private fun settings(orgId: String? = null) = orgDoc(orgId).collection("settings")
+    /** Product photos live in their own documents so bill lists stay small and fast. */
+    private fun photos() = orgDoc().collection("photos")
 
     private fun now() = System.currentTimeMillis()
 
@@ -182,14 +184,20 @@ object Repo {
     // ---------------- customers ----------------
 
     /** Saves or updates a customer; the 10-digit phone number is the key, so repeat customers are found again. */
-    suspend fun saveCustomer(c: Customer): Customer {
+    /**
+     * Saves a customer. With [keepIds] (used when billing) an empty ID field never wipes an ID already saved —
+     * estimates don't ask for ID proof. The customer screen passes false so an ID can be removed there.
+     */
+    suspend fun saveCustomer(c: Customer, keepIds: Boolean = true): Customer {
         val digits = c.phone.filter { it.isDigit() }.takeLast(10)
         val ref = when {
             c.id.isNotBlank() -> customers().document(c.id)
             digits.length == 10 -> customers().document(digits)
             else -> customers().document()
         }
-        ref.set(c.toMap() + mapOf("updatedAt" to now()), SetOptions.merge()).await()
+        val idKeys = setOf("aadhaar", "passport", "voterId", "drivingLicence")
+        val data = c.toMap().filter { (k, v) -> !(keepIds && k in idKeys && v.toString().isBlank()) }
+        ref.set(data + mapOf("updatedAt" to now()), SetOptions.merge()).await()
         return c.copy(id = ref.id)
     }
 
@@ -201,7 +209,59 @@ object Repo {
      * Saves a new invoice with the next number of its series (e.g. INV/2026-27/0012).
      * Numbers come from a counter in a transaction, so two users never get the same number.
      */
-    suspend fun createInvoice(draft: Invoice, shop: ShopSettings): Invoice {
+    // ---------------- product photos ----------------
+
+    private val photoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** A new id for a photo taken in the bill editor; the picture is kept in memory until the bill is saved. */
+    fun newPhotoId(): String = photos().document().id
+
+    /** Saves the photos the bill uses that aren't stored yet. */
+    private suspend fun storePhotos(inv: Invoice, pending: Map<String, String>) {
+        val used = (inv.items.map { it.photo } + inv.oldItems.map { it.photo }).filter { it.isNotBlank() }.toSet()
+        val batch = db.batch(); var n = 0
+        pending.filterKeys { it in used }.forEach { (id, data) ->
+            batch.set(photos().document(id), mapOf("data" to data, "invoiceId" to inv.id, "by" to (uid ?: ""), "at" to now()))
+            photoCache[id] = data; n++
+        }
+        if (n > 0) batch.commit().await()
+    }
+
+    suspend fun photo(id: String): String? {
+        if (id.isBlank()) return null
+        photoCache[id]?.let { return it }
+        return runCatching { photos().document(id).get().await().getString("data") }.getOrNull()?.also { photoCache[id] = it }
+    }
+
+    /** All photos of a bill, id → picture, for the PDF and the bill screen. */
+    suspend fun photosOf(inv: Invoice): Map<String, String> =
+        (inv.items.map { it.photo } + inv.oldItems.map { it.photo }).filter { it.isNotBlank() }.distinct()
+            .mapNotNull { id -> photo(id)?.let { id to it } }.toMap()
+
+    suspend fun invoiceOnce(id: String): Invoice? =
+        runCatching { invoices().document(id).get().await().takeIf { it.exists() }?.toInvoice() }.getOrNull()
+
+    /**
+     * Changes a bill after it was made. Number, date, type and who made it stay the same;
+     * the bill records when and by whom it was last edited.
+     */
+    suspend fun updateInvoice(original: Invoice, draft: Invoice, shop: ShopSettings, pendingPhotos: Map<String, String>): Invoice {
+        val meNow = me ?: error("Not signed in")
+        if (original.isCancelled) error("A cancelled bill can't be edited")
+        val customer = if (draft.customer.phone.isNotBlank() || draft.customer.name.isNotBlank())
+            runCatching { saveCustomer(draft.customer) }.getOrDefault(draft.customer) else draft.customer
+        val inv = draft.copy(
+            id = original.id, type = original.type, number = original.number, at = original.at, customer = customer,
+            createdBy = original.createdBy, createdByName = original.createdByName, status = original.status,
+            cancelReason = original.cancelReason, gstRate = original.gstRate, terms = draft.terms.ifBlank { shop.terms },
+            editedAt = now(), editedByName = meNow.name, editCount = original.editCount + 1
+        )
+        storePhotos(inv, pendingPhotos)
+        invoices().document(original.id).set(inv.toMap()).await()
+        return inv
+    }
+
+    suspend fun createInvoice(draft: Invoice, shop: ShopSettings, pendingPhotos: Map<String, String> = emptyMap()): Invoice {
         val meNow = me ?: error("Not signed in")
         val at = now()
         val kind = draft.kind
@@ -212,6 +272,7 @@ object Repo {
         val ref = invoices().document()
         val customer = if (draft.customer.phone.isNotBlank() || draft.customer.name.isNotBlank())
             runCatching { saveCustomer(draft.customer) }.getOrDefault(draft.customer) else draft.customer
+        storePhotos(draft.copy(id = ref.id), pendingPhotos)
         val saved = db.runTransaction { tx ->
             val snap = tx.get(counterRef)
             val next = ((snap.get(key) as? Number)?.toLong() ?: 0L) + 1
@@ -243,7 +304,7 @@ object Repo {
     suspend fun deleteOrg(org: Org) {
         val root = orgs().document(org.id)
         val refs = mutableListOf<DocumentReference>()
-        for (sub in listOf("invoices", "customers", "settings")) root.collection(sub).get().await().documents.forEach { refs += it.reference }
+        for (sub in listOf("invoices", "customers", "settings", "photos")) root.collection(sub).get().await().documents.forEach { refs += it.reference }
         users().whereEqualTo("orgId", org.id).get().await().documents.forEach { refs += it.reference }
         if (org.code.isNotBlank()) refs += codes().document(org.code)
         refs.chunked(400).forEach { chunk -> db.batch().apply { chunk.forEach { delete(it) } }.commit().await() }

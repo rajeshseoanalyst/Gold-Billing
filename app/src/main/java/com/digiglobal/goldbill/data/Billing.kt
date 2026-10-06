@@ -61,7 +61,8 @@ data class SaleItem(
     val rate: Double = 0.0,               // ₹ per gram
     val makingType: String = MakingType.PER_GRAM.code,
     val makingValue: Double = 0.0,
-    val stoneCharges: Double = 0.0
+    val stoneCharges: Double = 0.0,
+    val photo: String = ""                // id of the product photo (stored separately), "" = none
 ) {
     val netWt: Double get() = r3((grossWt - stoneWt).coerceAtLeast(0.0))
     /** Net weight plus wastage, the weight that is charged. */
@@ -84,7 +85,8 @@ data class OldItem(
     val purity: String = "22K (916)",
     val grossWt: Double = 0.0,
     val lessPct: Double = 0.0,            // melting / dirt / stone deduction %
-    val rate: Double = 0.0
+    val rate: Double = 0.0,
+    val photo: String = ""                // id of the product photo, "" = none
 ) {
     val netWt: Double get() = r3((grossWt * (1 - lessPct / 100.0)).coerceAtLeast(0.0))
     val value: Double get() = r2(netWt * rate)
@@ -126,7 +128,10 @@ data class Invoice(
     val createdBy: String = "",
     val createdByName: String = "",
     val status: String = "active",        // active | cancelled
-    val cancelReason: String = ""
+    val cancelReason: String = "",
+    val editedAt: Long = 0L,              // last time the bill was changed after it was made
+    val editedByName: String = "",
+    val editCount: Int = 0
 ) {
     val kind: InvoiceType get() = InvoiceType.of(type)
     val isCancelled: Boolean get() = status == "cancelled"
@@ -318,7 +323,12 @@ data class ShopSettings(
     val purchasePrefix: String = "PUR",
     val estimatePrefix: String = "EST",
     val hsnGold: String = "7113",
-    val hsnSilver: String = "7113"
+    val hsnSilver: String = "7113",
+    // Authorised signatory printed at the bottom right of every bill.
+    val signature: String = "",           // base64 picture of the signature (or signature + stamp)
+    val signatoryName: String = "",       // e.g. "Rajesh Kumar"
+    val signatoryTitle: String = "Authorised Signatory",
+    val showSignature: Boolean = true
 ) {
     companion object {
         val DEFAULT_TERMS = """

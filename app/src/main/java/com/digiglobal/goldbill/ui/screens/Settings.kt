@@ -51,6 +51,10 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
     var estP by remember(shop) { mutableStateOf(shop.estimatePrefix) }
     var hsnG by remember(shop) { mutableStateOf(shop.hsnGold) }
     var hsnS by remember(shop) { mutableStateOf(shop.hsnSilver) }
+    var signature by remember(shop) { mutableStateOf(shop.signature) }
+    var sigName by remember(shop) { mutableStateOf(shop.signatoryName) }
+    var sigTitle by remember(shop) { mutableStateOf(shop.signatoryTitle) }
+    var showSig by remember(shop) { mutableStateOf(shop.showSignature) }
     var saving by remember { mutableStateOf(false) }
 
     @Composable fun field(label: String, v: String, set: (String) -> Unit, lines: Int = 1, kb: KeyboardType = KeyboardType.Text) =
@@ -103,6 +107,31 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
                 }
                 field("UPI ID", upi, { upi = it.trim() })
             }
+            SectionCard("Authorised signatory (bottom right of every bill)") {
+                val pic = rememberPicture(signature)
+                if (pic != null) {
+                    Surface(shape = RoundedCornerShape(10.dp), color = androidx.compose.ui.graphics.Color.White,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        androidx.compose.foundation.Image(pic, "Signature", contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth().height(90.dp).padding(8.dp))
+                    }
+                } else Text("No signature uploaded yet. Sign on plain white paper (you can add the shop stamp too) and take a photo.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (admin) {
+                    PhotoButtons(PicKind.SIGNATURE, onPicked = { b64 ->
+                        if (b64 == null) Share.toast(ctx, "Couldn't read that picture") else signature = b64
+                    })
+                    if (signature.isNotBlank()) TextButton(onClick = { signature = "" }) { Text("Remove signature", color = MaterialTheme.colorScheme.error) }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Print the signature on bills", Modifier.weight(1f))
+                    Switch(showSig, { showSig = it }, enabled = admin)
+                }
+                field("Signatory name (optional, e.g. Rajesh Kumar)", sigName, { sigName = it })
+                field("Title under the signature", sigTitle, { sigTitle = it })
+                Text("Prints as: For ${name.ifBlank { "your shop" }} · signature · ${sigName.ifBlank { "" }} ${sigTitle.ifBlank { "Authorised Signatory" }}".replace("  ", " "),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             SectionCard("Terms & conditions") {
                 field("One term per line", terms, { terms = it }, 6)
                 field("Thank-you note at the bottom", footer, { footer = it })
@@ -114,7 +143,8 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
                     try {
                         Repo.saveShop(ShopSettings(name.trim(), address.trim(), phone.trim(), email.trim(), gstin.trim(), state, pan.trim(),
                             bank.trim(), acc.trim(), ifsc.trim(), upi.trim(), terms.trim(), footer.trim(), gstRate.toDoubleOrNull() ?: 3.0,
-                            invP.ifBlank { "INV" }, purP.ifBlank { "PUR" }, estP.ifBlank { "EST" }, hsnG.ifBlank { "7113" }, hsnS.ifBlank { "7113" }))
+                            invP.ifBlank { "INV" }, purP.ifBlank { "PUR" }, estP.ifBlank { "EST" }, hsnG.ifBlank { "7113" }, hsnS.ifBlank { "7113" },
+                            signature, sigName.trim(), sigTitle.trim().ifBlank { "Authorised Signatory" }, showSig))
                         Share.toast(ctx, "Saved"); nav.popBackStack()
                     } catch (e: Exception) { Share.toast(ctx, e.message ?: "Couldn't save") } finally { saving = false }
                 }

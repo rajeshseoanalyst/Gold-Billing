@@ -355,6 +355,10 @@ fun MainScaffold(me: UserProfile, org: Org, isOwner: Boolean) {
             composable("new/{type}") { e ->
                 InvoiceEditorScreen(InvoiceType.of(e.arguments?.getString("type").orEmpty()), me, org, shop, rates, nav)
             }
+            composable("edit/{type}/{id}") { e ->
+                InvoiceEditorScreen(InvoiceType.of(e.arguments?.getString("type").orEmpty()), me, org, shop, rates, nav,
+                    editId = e.arguments?.getString("id"))
+            }
             composable("invoice/{id}") { e -> InvoiceViewScreen(e.arguments?.getString("id").orEmpty(), me, org, shop, nav) }
             composable("customers") { CustomersScreen(me, nav) }
             composable("more") { MoreScreen(me, org, isOwner, nav) }

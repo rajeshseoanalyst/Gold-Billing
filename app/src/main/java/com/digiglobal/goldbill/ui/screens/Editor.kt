@@ -53,8 +53,16 @@ private fun d(s: String) = s.toDoubleOrNull() ?: 0.0
 private fun s(v: Double) = if (v == 0.0) "" else if (v == Math.floor(v)) v.toLong().toString() else v.toString()
 
 @Composable
-fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: ShopSettings, rates: Rates, nav: NavController) {
+fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: ShopSettings, rates: Rates, nav: NavController, editId: String? = null) {
     val scope = rememberCoroutineScope()
+    // Estimates don't ask for ID proof; product photos are for sale, purchase and exchange bills.
+    val withIds = type != InvoiceType.ESTIMATE
+    val withPhotos = type != InvoiceType.ESTIMATE
+    // Photos taken in this session, id → picture, saved together with the bill.
+    val pendingPhotos = remember { mutableStateMapOf<String, String>() }
+    var original by remember { mutableStateOf<Invoice?>(null) }
+    var loading by remember { mutableStateOf(editId != null) }
+    var viewPhoto by remember { mutableStateOf<String?>(null) }
     val customers by remember { Repo.customersFlow() }.collectAsState(initial = emptyList())
 
     // customer
@@ -111,10 +119,36 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
         }
     }
 
+    // Editing a saved bill: load it and fill every field.
+    LaunchedEffect(editId) {
+        val id = editId ?: return@LaunchedEffect
+        val inv = Repo.invoiceOnce(id)
+        if (inv == null) { error = "Couldn't load this bill"; loading = false; return@LaunchedEffect }
+        original = inv
+        fillFrom(inv.customer, withPhone = true)
+        items.clear(); items.addAll(inv.items)
+        oldItems.clear(); oldItems.addAll(inv.oldItems)
+        discount = s(inv.discount); includeGst = inv.includeGst; interOverride = inv.interState
+        payMode = inv.payMode; paid = s(inv.amountPaid); remarks = inv.remarks; terms = inv.terms.ifBlank { shop.terms }
+        loading = false
+    }
+
+    // A bill copied from an estimate has no ID proof: take it from the saved customer when there is one.
+    LaunchedEffect(customers, cPhone) {
+        if (!withIds || listOf(cAadhaar, cPassport, cVoter, cDl).any { it.isNotBlank() }) return@LaunchedEffect
+        val digits = cPhone.filter { it.isDigit() }.takeLast(10)
+        if (digits.length != 10) return@LaunchedEffect
+        customers.firstOrNull { it.phone.filter { c -> c.isDigit() }.takeLast(10) == digits }?.let { c ->
+            cAadhaar = c.aadhaar; cPassport = c.passport; cVoter = c.voterId; cDl = c.drivingLicence
+        }
+    }
+
     fun draft() = Invoice(
         type = type.code,
         customer = IdProof.normalise(Customer(cId, cName.trim(), cPhone.trim(), cEmail.trim(), cAddress.trim(), cGstin.trim().uppercase(),
-            cPan.trim().uppercase(), cState, cRemarks.trim(), cAadhaar.trim(), cPassport.trim(), cVoter.trim(), cDl.trim())),
+            cPan.trim().uppercase(), cState, cRemarks.trim(),
+            if (withIds) cAadhaar.trim() else "", if (withIds) cPassport.trim() else "",
+            if (withIds) cVoter.trim() else "", if (withIds) cDl.trim() else "")),
         items = items.toList(), oldItems = oldItems.toList(), discount = d(discount), gstRate = shop.gstRate,
         includeGst = includeGst, interState = interState, payMode = payMode, amountPaid = d(paid),
         remarks = remarks.trim(), terms = terms
@@ -123,7 +157,9 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
 
     val newRate = { metal: String, purity: String -> Billing.rateFor(metal, purity, rates) }
 
-    Screen("New ${type.label.lowercase()}", onBack = { nav.popBackStack() }) { pad ->
+    val title = original?.let { "Edit ${it.number}" } ?: if (editId != null) "Edit bill" else "New ${type.label.lowercase()}"
+    Screen(title, onBack = { nav.popBackStack() }) { pad ->
+        if (loading) { Loading(); return@Screen }
         Column(Modifier.padding(pad).fillMaxSize()) {
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (type != InvoiceType.ESTIMATE && shop.gstin.isBlank() && type != InvoiceType.PURCHASE) item {
@@ -175,8 +211,8 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                     }
                 }
 
-                // ---------- ID proof: at least one ----------
-                item {
+                // ---------- ID proof: at least one (not for estimates) ----------
+                if (withIds) item {
                     val okCount = listOf(cAadhaar, cPassport, cVoter, cDl).count { it.isNotBlank() }
                     SectionCard("Customer ID proof *") {
                         Text(if (okCount == 0) "Enter any one — Aadhaar, passport, voter ID or driving licence. The rest are optional."
@@ -215,7 +251,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         }) {
                             if (items.isEmpty()) Text("No items yet. Tap “Add item”.", style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            items.forEachIndexed { i, it -> ItemLine(it, onEdit = { editItem = i to it }, onDelete = { items.removeAt(i) }) }
+                            items.forEachIndexed { i, it -> ItemLine(it, pendingPhotos, onPhoto = { viewPhoto = it.photo }, onEdit = { editItem = i to it }, onDelete = { items.removeAt(i) }) }
                         }
                     }
                 }
@@ -230,7 +266,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                             }) { Icon(Icons.Filled.Add, null); Text("Add old item") }
                         }) {
                             if (oldItems.isEmpty()) Text("No old items yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            oldItems.forEachIndexed { i, it -> OldLine(it, onEdit = { editOld = i to it }, onDelete = { oldItems.removeAt(i) }) }
+                            oldItems.forEachIndexed { i, it -> OldLine(it, pendingPhotos, onPhoto = { viewPhoto = it.photo }, onEdit = { editOld = i to it }, onDelete = { oldItems.removeAt(i) }) }
                         }
                     }
                 }
@@ -289,7 +325,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         val dr = draft()
                         error = when {
                             dr.customer.name.isBlank() -> "Enter the customer's name"
-                            IdProof.problem(dr.customer) != null -> IdProof.problem(dr.customer)
+                            withIds && IdProof.problem(dr.customer) != null -> IdProof.problem(dr.customer)
                             type.hasNewItems && dr.items.isEmpty() -> "Add at least one item"
                             type.hasOldItems && dr.oldItems.isEmpty() -> "Add at least one old gold / silver item"
                             dr.items.any { it.grossWt <= 0 || it.rate <= 0 } -> "Every item needs a weight and a rate"
@@ -300,15 +336,21 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         busy = true
                         scope.launch {
                             try {
-                                val saved = Repo.createInvoice(dr, shop)
-                                nav.navigate("invoice/${saved.id}") { popUpTo("home") }
+                                val orig = original
+                                if (orig != null) {
+                                    Repo.updateInvoice(orig, dr, shop, pendingPhotos.toMap())
+                                    nav.popBackStack()
+                                } else {
+                                    val saved = Repo.createInvoice(dr, shop, pendingPhotos.toMap())
+                                    nav.navigate("invoice/${saved.id}") { popUpTo("home") }
+                                }
                             } catch (e: Exception) {
                                 error = e.message ?: "Couldn't save the bill"
                             } finally { busy = false }
                         }
                     }, modifier = Modifier.height(50.dp)) {
                         if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                        else { Icon(Icons.Filled.Check, null); Spacer(Modifier.width(6.dp)); Text("Save ${type.label.lowercase()}") }
+                        else { Icon(Icons.Filled.Check, null); Spacer(Modifier.width(6.dp)); Text(if (editId != null) "Save changes" else "Save ${type.label.lowercase()}") }
                     }
                 }
             }
@@ -316,26 +358,28 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
     }
 
     editItem?.let { (idx, item) ->
-        ItemDialog(item, rates, shop, onDismiss = { editItem = null }) { updated ->
+        ItemDialog(item, rates, shop, withPhotos, pendingPhotos, onDismiss = { editItem = null }) { updated ->
             if (idx < 0) items.add(updated) else items[idx] = updated
             editItem = null
         }
     }
     editOld?.let { (idx, item) ->
-        OldItemDialog(item, rates, onDismiss = { editOld = null }) { updated ->
+        OldItemDialog(item, rates, withPhotos, pendingPhotos, onDismiss = { editOld = null }) { updated ->
             if (idx < 0) oldItems.add(updated) else oldItems[idx] = updated
             editOld = null
         }
     }
+    viewPhoto?.let { PhotoViewer(it, pendingPhotos) { viewPhoto = null } }
 }
 
 fun fmtPct(v: Double) = if (v == Math.floor(v)) v.toLong().toString() else v.toString()
 
 @Composable
-private fun ItemLine(it: SaleItem, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun ItemLine(it: SaleItem, unsaved: Map<String, String>, onPhoto: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
     Card(onClick = onEdit, shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (it.photo.isNotBlank()) { ProductThumb(it.photo, 44, unsaved, onPhoto); Spacer(Modifier.width(10.dp)) }
             Column(Modifier.weight(1f)) {
                 Text(it.description.ifBlank { "${it.metal} item" } + " · ${it.purity}", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("Net ${Billing.grams(it.netWt)} × ₹${Billing.inr(it.rate, false)} · making ₹${Billing.inr(it.making, false)}",
@@ -348,10 +392,11 @@ private fun ItemLine(it: SaleItem, onEdit: () -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-private fun OldLine(it: OldItem, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun OldLine(it: OldItem, unsaved: Map<String, String>, onPhoto: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
     Card(onClick = onEdit, shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (it.photo.isNotBlank()) { ProductThumb(it.photo, 44, unsaved, onPhoto); Spacer(Modifier.width(10.dp)) }
             Column(Modifier.weight(1f)) {
                 Text(it.description.ifBlank { "Old ${it.metal.lowercase()}" } + " · ${it.purity}", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("Gross ${Billing.grams(it.grossWt)} − ${fmtPct(it.lessPct)}% = net ${Billing.grams(it.netWt)} × ₹${Billing.inr(it.rate, false)}",
@@ -397,7 +442,9 @@ fun TotalsCard(type: InvoiceType, t: Totals, interState: Boolean, gstRate: Doubl
 // ============================ item dialogs ============================
 
 @Composable
-private fun ItemDialog(start: SaleItem, rates: Rates, shop: ShopSettings, onDismiss: () -> Unit, onSave: (SaleItem) -> Unit) {
+private fun ItemDialog(start: SaleItem, rates: Rates, shop: ShopSettings, withPhoto: Boolean, pending: MutableMap<String, String>,
+                       onDismiss: () -> Unit, onSave: (SaleItem) -> Unit) {
+    var photo by remember { mutableStateOf(start.photo) }
     var desc by remember { mutableStateOf(start.description) }
     var metal by remember { mutableStateOf(start.metal) }
     var purity by remember { mutableStateOf(start.purity) }
@@ -413,7 +460,7 @@ private fun ItemDialog(start: SaleItem, rates: Rates, shop: ShopSettings, onDism
     var stoneCh by remember { mutableStateOf(s(start.stoneCharges)) }
 
     val item = SaleItem(desc.trim(), metal, purity, hsn.trim(), huid.trim().uppercase(), pcs.toIntOrNull()?.coerceAtLeast(1) ?: 1,
-        d(gross), d(stone), d(wastage), d(rate), makingType.code, d(making), d(stoneCh))
+        d(gross), d(stone), d(wastage), d(rate), makingType.code, d(making), d(stoneCh), if (withPhoto) photo else "")
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f)) {
@@ -422,6 +469,7 @@ private fun ItemDialog(start: SaleItem, rates: Rates, shop: ShopSettings, onDism
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(desc, { desc = it }, label = { Text("Item (e.g. Necklace, Ring, Coin)") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words), modifier = Modifier.fillMaxWidth())
+                    if (withPhoto) ProductPhotoField(photo, pending) { photo = it }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         DropdownField("Metal", metal, Metal.all, Modifier.weight(1f)) { m ->
                             metal = m; purity = Metal.purities(m).first()
@@ -473,14 +521,16 @@ private fun ItemDialog(start: SaleItem, rates: Rates, shop: ShopSettings, onDism
 }
 
 @Composable
-private fun OldItemDialog(start: OldItem, rates: Rates, onDismiss: () -> Unit, onSave: (OldItem) -> Unit) {
+private fun OldItemDialog(start: OldItem, rates: Rates, withPhoto: Boolean, pending: MutableMap<String, String>,
+                          onDismiss: () -> Unit, onSave: (OldItem) -> Unit) {
+    var photo by remember { mutableStateOf(start.photo) }
     var desc by remember { mutableStateOf(start.description) }
     var metal by remember { mutableStateOf(start.metal) }
     var purity by remember { mutableStateOf(start.purity) }
     var gross by remember { mutableStateOf(s(start.grossWt)) }
     var less by remember { mutableStateOf(s(start.lessPct)) }
     var rate by remember { mutableStateOf(s(start.rate)) }
-    val item = OldItem(desc.trim(), metal, purity, d(gross), d(less), d(rate))
+    val item = OldItem(desc.trim(), metal, purity, d(gross), d(less), d(rate), if (withPhoto) photo else "")
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -488,6 +538,7 @@ private fun OldItemDialog(start: OldItem, rates: Rates, onDismiss: () -> Unit, o
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(desc, { desc = it }, label = { Text("Description (e.g. Old chain)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (withPhoto) ProductPhotoField(photo, pending) { photo = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DropdownField("Metal", metal, listOf(Metal.GOLD, Metal.SILVER), Modifier.weight(1f)) { m ->
                         metal = m; purity = Metal.purities(m).first(); Billing.rateFor(m, purity, rates).takeIf { it > 0 }?.let { rate = s(it) }
@@ -511,3 +562,23 @@ private fun OldItemDialog(start: OldItem, rates: Rates, onDismiss: () -> Unit, o
     )
 }
 
+/** Product photo inside an item: preview with remove, or Camera / Gallery buttons. */
+@Composable
+private fun ProductPhotoField(photo: String, pending: MutableMap<String, String>, onChange: (String) -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Product photo (optional)", style = MaterialTheme.typography.labelMedium)
+        if (photo.isNotBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ProductThumb(photo, 72, pending)
+                Spacer(Modifier.width(12.dp))
+                TextButton(onClick = { onChange("") }) { Icon(Icons.Filled.Delete, null); Text("Remove photo") }
+            }
+        } else {
+            PhotoButtons(PicKind.PRODUCT, onPicked = { b64 ->
+                if (b64 == null) com.digiglobal.goldbill.util.Share.toast(ctx, "Couldn't read that photo")
+                else { val id = Repo.newPhotoId(); pending[id] = b64; onChange(id) }
+            })
+        }
+    }
+}

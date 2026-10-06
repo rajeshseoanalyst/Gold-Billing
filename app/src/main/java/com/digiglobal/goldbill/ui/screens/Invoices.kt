@@ -80,6 +80,7 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
     val state by remember(id) { Repo.invoiceFlow(id) }.collectAsState(initial = Invoice(id = "__loading"))
     var busy by remember { mutableStateOf(false) }
     var cancelAsk by remember { mutableStateOf(false) }
+    var viewPhoto by remember { mutableStateOf<String?>(null) }
     val inv = state
     if (inv == null) {
         Screen("Bill", onBack = { nav.popBackStack() }) { pad -> Box(Modifier.padding(pad)) { EmptyState("This bill isn't available.") } }
@@ -94,7 +95,8 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
         busy = true
         scope.launch {
             try {
-                val f = withContext(Dispatchers.IO) { InvoicePdf.create(ctx, inv, shop, shopName, org.logo) }
+                val photos = Repo.photosOf(inv)
+                val f = withContext(Dispatchers.IO) { InvoicePdf.create(ctx, inv, shop, shopName, org.logo, photos) }
                 use(f)
             } catch (e: Exception) {
                 Share.toast(ctx, e.message ?: "Couldn't create the PDF")
@@ -110,7 +112,12 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
         if (shop.phone.isNotBlank()) append("\nFor any help, call ${shop.phone}.")
     }
 
-    Screen(inv.number, onBack = { nav.popBackStack() }) { pad ->
+    // The admin can edit any bill; a billing user can edit the bills they made. Cancelled bills stay as they are.
+    val canEdit = !inv.isCancelled && (me.isAdmin || inv.createdBy == me.uid)
+    val openEditor = { nav.navigate("edit/${inv.kind.code}/${inv.id}") }
+    Screen(inv.number, onBack = { nav.popBackStack() }, actions = {
+        if (canEdit) TextButton(onClick = openEditor) { Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(4.dp)); Text("Edit") }
+    }) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 SectionCard {
@@ -125,12 +132,14 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
                     Text(listOf(inv.customer.phone, inv.customer.email).filter { it.isNotBlank() }.joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (inv.customer.gstin.isNotBlank()) Text("GSTIN ${inv.customer.gstin}", style = MaterialTheme.typography.bodySmall)
-                    IdProof.printable(inv.customer).takeIf { it.isNotEmpty() }?.let {
+                    if (inv.kind != InvoiceType.ESTIMATE) IdProof.printable(inv.customer).takeIf { it.isNotEmpty() }?.let {
                         Text(it.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Text("Billed by ${inv.createdByName} · ${inv.payMode}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (inv.isCancelled && inv.cancelReason.isNotBlank()) Text("Cancelled: ${inv.cancelReason}", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
+                    if (inv.editCount > 0) Text("Edited ${if (inv.editCount == 1) "once" else "${inv.editCount} times"} · last by ${inv.editedByName} on ${Fmt.dateTime(inv.editedAt)}",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
                 }
             }
 
@@ -167,7 +176,8 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
             if (inv.items.isNotEmpty() && inv.kind.hasNewItems) item {
                 SectionCard(if (inv.kind == InvoiceType.EXCHANGE) "New items sold" else "Items") {
                     inv.items.forEach { it ->
-                        Row(Modifier.padding(vertical = 4.dp)) {
+                        Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (it.photo.isNotBlank()) { ProductThumb(it.photo, 52, onClick = { viewPhoto = it.photo }); Spacer(Modifier.width(10.dp)) }
                             Column(Modifier.weight(1f)) {
                                 Text("${it.description.ifBlank { it.metal + " item" }} · ${it.metal} ${it.purity}", fontWeight = FontWeight.Medium)
                                 Text("Gross ${Billing.grams(it.grossWt)} · Net ${Billing.grams(it.netWt)} · ₹${Billing.inr(it.rate, false)}/g · making ₹${Billing.inr(it.making, false)}" +
@@ -182,7 +192,8 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
             if (inv.oldItems.isNotEmpty() && inv.kind.hasOldItems) item {
                 SectionCard(if (inv.kind == InvoiceType.PURCHASE) "Bought from customer" else "Old gold / silver received") {
                     inv.oldItems.forEach { o ->
-                        Row(Modifier.padding(vertical = 4.dp)) {
+                        Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (o.photo.isNotBlank()) { ProductThumb(o.photo, 52, onClick = { viewPhoto = o.photo }); Spacer(Modifier.width(10.dp)) }
                             Column(Modifier.weight(1f)) {
                                 Text("${o.description.ifBlank { "Old " + o.metal.lowercase() }} · ${o.metal} ${o.purity}", fontWeight = FontWeight.Medium)
                                 Text("Gross ${Billing.grams(o.grossWt)} − ${fmtPct(o.lessPct)}% = ${Billing.grams(o.netWt)} · ₹${Billing.inr(o.rate, false)}/g",
@@ -199,6 +210,9 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
             // ---- more actions ----
             item {
                 SectionCard {
+                    if (canEdit) TextButton(onClick = openEditor) {
+                        Icon(Icons.Filled.Edit, null); Spacer(Modifier.width(6.dp)); Text("Edit this bill")
+                    }
                     if (inv.customer.phone.isNotBlank()) TextButton(onClick = { Share.call(ctx, inv.customer.phone) }) {
                         Icon(Icons.Filled.Call, null); Spacer(Modifier.width(6.dp)); Text("Call customer")
                     }
@@ -216,6 +230,8 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
             }
         }
     }
+
+    viewPhoto?.let { PhotoViewer(it) { viewPhoto = null } }
 
     if (cancelAsk) {
         var reason by remember { mutableStateOf("") }
@@ -305,7 +321,7 @@ fun CustomersScreen(me: UserProfile, nav: NavController) {
                     OutlinedTextField(address, { address = it }, label = { Text("Address") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(gstin, { gstin = it.uppercase().take(15) }, label = { Text("GSTIN") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(remarks, { remarks = it }, label = { Text("Remarks") }, minLines = 2, modifier = Modifier.fillMaxWidth())
-                    Text("ID proof — enter at least one", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Text("ID proof — any one is needed on sale, purchase & exchange bills", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                     OutlinedTextField(aadhaar, { v -> aadhaar = IdProof.formatAadhaar(v.filter { it.isDigit() }.take(12)) }, label = { Text("Aadhaar number") },
                         singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(passport, { passport = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(8) }, label = { Text("Passport no.") },
@@ -321,10 +337,10 @@ fun CustomersScreen(me: UserProfile, nav: NavController) {
                     val out = IdProof.normalise(c.copy(name = name.trim(), phone = phone.trim(), email = email.trim(), address = address.trim(),
                         gstin = gstin.trim(), remarks = remarks.trim(), stateCode = Billing.stateFromGstin(gstin).ifBlank { c.stateCode },
                         aadhaar = aadhaar.trim(), passport = passport.trim(), voterId = voter.trim(), drivingLicence = dl.trim()))
-                    problem = IdProof.problem(out)
+                    problem = if (IdProof.hasAny(out)) IdProof.problem(out) else null
                     if (problem != null) return@TextButton
                     editing = null
-                    scope.launch { runCatching { Repo.saveCustomer(out) }.onFailure { Share.toast(ctx, it.message ?: "Couldn't save") } }
+                    scope.launch { runCatching { Repo.saveCustomer(out, keepIds = false) }.onFailure { Share.toast(ctx, it.message ?: "Couldn't save") } }
                 }) { Text("Save") }
             },
             dismissButton = {

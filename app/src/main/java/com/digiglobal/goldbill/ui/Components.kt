@@ -210,3 +210,81 @@ fun DropdownField(label: String, value: String, options: List<String>, modifier:
     }
 }
 
+
+/** Which size a picked picture is saved at. */
+enum class PicKind { PRODUCT, SIGNATURE }
+
+/**
+ * "Camera" and "Gallery" buttons. The camera opens the phone's camera app (no camera permission needed);
+ * the result is shrunk and handed back as base64, or null if it couldn't be read.
+ */
+@Composable
+fun PhotoButtons(kind: PicKind, onPicked: (String?) -> Unit, modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    val read = { uri: android.net.Uri ->
+        when (kind) {
+            PicKind.PRODUCT -> com.digiglobal.goldbill.util.Images.product(ctx, uri)
+            PicKind.SIGNATURE -> com.digiglobal.goldbill.util.Images.signature(ctx, uri)
+        }
+    }
+    var shotUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val u = shotUri
+        if (ok && u != null) onPicked(read(u))
+    }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) onPicked(read(uri))
+    }
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            runCatching {
+                val dir = java.io.File(ctx.cacheDir, "camera").apply { mkdirs() }
+                val file = java.io.File(dir, "shot_${System.currentTimeMillis()}.jpg")
+                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
+                shotUri = uri
+                camera.launch(uri)
+            }.onFailure { onPicked(null) }
+        }) { Icon(Icons.Filled.PhotoCamera, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Camera") }
+        OutlinedButton(onClick = { gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
+            Icon(Icons.Filled.PhotoLibrary, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Gallery")
+        }
+    }
+}
+
+/** A product photo by id: loads it once (from memory, the editor's unsaved pictures, or the database). */
+@Composable
+fun rememberProductPhoto(id: String, unsaved: Map<String, String> = emptyMap()): androidx.compose.ui.graphics.ImageBitmap? {
+    var b64 by remember(id) { mutableStateOf(unsaved[id] ?: "") }
+    LaunchedEffect(id) {
+        if (b64.isBlank() && id.isNotBlank()) b64 = com.digiglobal.goldbill.data.Repo.photo(id) ?: ""
+    }
+    return rememberPicture(b64)
+}
+
+/** Small rounded product thumbnail; shows a placeholder icon while loading. */
+@Composable
+fun ProductThumb(id: String, size: Int = 48, unsaved: Map<String, String> = emptyMap(), onClick: (() -> Unit)? = null) {
+    if (id.isBlank()) return
+    val pic = rememberProductPhoto(id, unsaved)
+    val m = Modifier.size(size.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+        .let { if (onClick != null) it.clickable { onClick() } else it }
+    Box(m, contentAlignment = Alignment.Center) {
+        if (pic != null) Image(pic, "Product photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        else Icon(Icons.Filled.Image, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size((size / 2).dp))
+    }
+}
+
+/** Full-screen look at a product photo. */
+@Composable
+fun PhotoViewer(id: String, unsaved: Map<String, String> = emptyMap(), onDismiss: () -> Unit) {
+    val pic = rememberProductPhoto(id, unsaved)
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (pic != null) Image(pic, "Product photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp))
+                else CircularProgressIndicator()
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        }
+    }
+}
