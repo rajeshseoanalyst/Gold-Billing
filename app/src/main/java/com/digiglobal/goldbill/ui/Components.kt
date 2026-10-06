@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
@@ -212,7 +215,7 @@ fun DropdownField(label: String, value: String, options: List<String>, modifier:
 
 
 /** Which size a picked picture is saved at. */
-enum class PicKind { PRODUCT, SIGNATURE }
+enum class PicKind { PRODUCT, SIGNATURE, DOCUMENT }
 
 /**
  * "Camera" and "Gallery" buttons. The camera opens the phone's camera app (no camera permission needed);
@@ -225,6 +228,7 @@ fun PhotoButtons(kind: PicKind, onPicked: (String?) -> Unit, modifier: Modifier 
         when (kind) {
             PicKind.PRODUCT -> com.digiglobal.goldbill.util.Images.product(ctx, uri)
             PicKind.SIGNATURE -> com.digiglobal.goldbill.util.Images.signature(ctx, uri)
+            PicKind.DOCUMENT -> com.digiglobal.goldbill.util.Images.document(ctx, uri)
         }
     }
     var shotUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
@@ -281,9 +285,92 @@ fun PhotoViewer(id: String, unsaved: Map<String, String> = emptyMap(), onDismiss
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (pic != null) Image(pic, "Product photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp))
+                if (pic != null) Image(pic, "Product photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp))
                 else CircularProgressIndicator()
                 TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        }
+    }
+}
+
+/**
+ * Full-width pad where the customer signs with a finger. Returns the signature as base64 JPEG
+ * (cropped to the ink, on white), or nothing if they cancel.
+ */
+@Composable
+fun SignaturePadDialog(title: String, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    val strokes = remember { mutableStateListOf<List<androidx.compose.ui.geometry.Offset>>() }
+    var current by remember { mutableStateOf<List<androidx.compose.ui.geometry.Offset>>(emptyList()) }
+    var padSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val ink = Color(0xFF14286E)
+
+    fun render(): String? {
+        val all = strokes.filter { it.isNotEmpty() }
+        if (all.isEmpty() || padSize.width == 0) return null
+        val pts = all.flatten()
+        val pad = 16f
+        val left = (pts.minOf { it.x } - pad).coerceAtLeast(0f); val top = (pts.minOf { it.y } - pad).coerceAtLeast(0f)
+        val right = (pts.maxOf { it.x } + pad).coerceAtMost(padSize.width.toFloat()); val bottom = (pts.maxOf { it.y } + pad).coerceAtMost(padSize.height.toFloat())
+        val w = (right - left).toInt().coerceAtLeast(1); val h = (bottom - top).toInt().coerceAtLeast(1)
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        c.drawColor(android.graphics.Color.WHITE)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.rgb(0x14, 0x28, 0x6E); style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 6f; strokeCap = android.graphics.Paint.Cap.ROUND; strokeJoin = android.graphics.Paint.Join.ROUND
+        }
+        all.forEach { s ->
+            val path = android.graphics.Path()
+            path.moveTo(s[0].x - left, s[0].y - top)
+            s.drop(1).forEach { o -> path.lineTo(o.x - left, o.y - top) }
+            if (s.size == 1) path.lineTo(s[0].x - left + 0.5f, s[0].y - top)
+            c.drawPath(path, p)
+        }
+        return com.digiglobal.goldbill.util.Images.fromBitmap(bmp)
+    }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth(0.96f)) {
+            Column(Modifier.padding(16.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("Sign inside the box with your finger.", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)).background(Color.White)
+                        .then(Modifier.background(Color.White))
+                ) {
+                    androidx.compose.foundation.Canvas(
+                        Modifier.fillMaxSize()
+                            .onSizeChanged { padSize = it }
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDragStart = { o -> current = listOf(o) },
+                                    onDrag = { change, _ -> current = current + change.position },
+                                    onDragEnd = { strokes.add(current); current = emptyList() },
+                                    onDragCancel = { strokes.add(current); current = emptyList() }
+                                )
+                            }
+                    ) {
+                        // signing line
+                        drawLine(Color(0xFFBDBDBD), androidx.compose.ui.geometry.Offset(24f, size.height * 0.78f),
+                            androidx.compose.ui.geometry.Offset(size.width - 24f, size.height * 0.78f), strokeWidth = 2f)
+                        (strokes + listOf(current)).forEach { s ->
+                            if (s.size == 1) drawCircle(ink, 3f, s[0])
+                            for (i in 1 until s.size) drawLine(ink, s[i - 1], s[i], strokeWidth = 6f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        }
+                    }
+                    androidx.compose.foundation.layout.Box(Modifier.matchParentSize().padding(8.dp)) {
+                        Text("✕", color = Color(0xFFBDBDBD), modifier = Modifier.align(Alignment.BottomStart).padding(bottom = 40.dp))
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { strokes.clear(); current = emptyList() }) { Text("Clear") }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Button(enabled = strokes.isNotEmpty(), onClick = { render()?.let(onDone) }) { Text("Done") }
+                }
             }
         }
     }

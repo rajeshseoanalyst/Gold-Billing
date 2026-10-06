@@ -92,6 +92,15 @@ data class OldItem(
     val value: Double get() = r2(netWt * rate)
 }
 
+/** A photo of a customer document (Aadhaar card, PAN card, ...) kept with a bill. */
+data class DocImage(val id: String = "", val label: String = "ID document") {
+    companion object {
+        val LABELS = listOf("Aadhaar card – front", "Aadhaar card – back", "PAN card", "Passport", "Voter ID",
+            "Driving licence", "Other document")
+        const val MAX = 4
+    }
+}
+
 data class Customer(
     val id: String = "",
     val name: String = "",
@@ -129,6 +138,8 @@ data class Invoice(
     val createdByName: String = "",
     val status: String = "active",        // active | cancelled
     val cancelReason: String = "",
+    val customerSign: String = "",        // photo id of the customer's / seller's signature ("" = none)
+    val documents: List<DocImage> = emptyList(),   // photos of the customer's ID documents (not on estimates)
     val editedAt: Long = 0L,              // last time the bill was changed after it was made
     val editedByName: String = "",
     val editCount: Int = 0
@@ -328,7 +339,8 @@ data class ShopSettings(
     val signature: String = "",           // base64 picture of the signature (or signature + stamp)
     val signatoryName: String = "",       // e.g. "Rajesh Kumar"
     val signatoryTitle: String = "Authorised Signatory",
-    val showSignature: Boolean = true
+    val showSignature: Boolean = true,
+    val printDocuments: Boolean = true    // print customer document photos on bills
 ) {
     companion object {
         val DEFAULT_TERMS = """

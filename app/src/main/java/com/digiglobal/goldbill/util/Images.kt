@@ -26,6 +26,9 @@ object Images {
     /** Product photo for a bill: up to 600 px, ~40–70 KB. */
     fun product(ctx: Context, uri: Uri): String? = encode(ctx, uri, 600, square = false, quality = 72)
 
+    /** Customer document (Aadhaar card, PAN card...): kept large so every detail can be read. ~150–300 KB. */
+    fun document(ctx: Context, uri: Uri): String? = encode(ctx, uri, 1400, square = false, quality = 80)
+
     /** Signature (or signature + stamp) photographed on white paper. Whitened so it prints cleanly. */
     fun signature(ctx: Context, uri: Uri): String? = encode(ctx, uri, 480, square = false, quality = 85, whiten = true)
 
@@ -67,6 +70,16 @@ object Images {
 
         val out = ByteArrayOutputStream()
         flat.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }.getOrNull()
+
+    /** A signature drawn on the screen (already on white), shrunk and saved as JPEG. */
+    fun fromBitmap(src: Bitmap, max: Int = 480): String? = runCatching {
+        var bmp = src
+        val scale = minOf(1f, max.toFloat() / maxOf(bmp.width, bmp.height))
+        if (scale < 1f) bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 88, out)
         Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }.getOrNull()
 

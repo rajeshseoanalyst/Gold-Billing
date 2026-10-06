@@ -60,6 +60,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
         if (inv.kind.hasOldItems && inv.oldItems.isNotEmpty()) oldTable()
         totalsBlock()
         termsAndSign()
+        documentsSection()
         finishPage()
         out.parentFile?.mkdirs()
         out.outputStream().use { doc.writeTo(it) }
@@ -372,8 +373,10 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             y += 6f
         }
         val sig = if (shop.showSignature) Images.decode(shop.signature) else null
+        // Customer's / seller's own signature, taken on the phone, drawn above the left-hand line.
+        val custSig = if (inv.kind != InvoiceType.ESTIMATE) photos[inv.customerSign]?.let { Images.decode(it) } else null
         val hasName = shop.signatoryName.isNotBlank()
-        ensure(if (sig != null) 80f else 64f)
+        ensure(if (sig != null || custSig != null) 80f else 64f)
         y += 8f
         text("For ${shopName.ifBlank { shop.name }}", W - M, y, tp(8.5f, true), Paint.Align.RIGHT)
         val sigW = 170f
@@ -385,7 +388,14 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             val left = W - M - (sigW + w) / 2; val top = y + 14f + (boxH - h)
             c.drawBitmap(sig, null, RectF(left, top, left + w, top + h), Paint(Paint.FILTER_BITMAP_FLAG))
             y += 14f + boxH + 2f
-        } else y += 32f
+        } else y += if (custSig != null) 46f else 32f
+        if (custSig != null) {
+            val boxH = 40f; val boxW = sigW - 10f
+            val scale = minOf(boxW / custSig.width, boxH / custSig.height)
+            val w = custSig.width * scale; val h = custSig.height * scale
+            val left = M + (sigW - w) / 2; val top = y - 2f - h
+            c.drawBitmap(custSig, null, RectF(left, top, left + w, top + h), Paint(Paint.FILTER_BITMAP_FLAG))
+        }
         hline(y, ink, 0.6f, M, M + sigW)
         hline(y, ink, 0.6f, W - M - sigW, W - M)
         text(if (inv.kind == InvoiceType.PURCHASE) "Seller's signature" else "Customer's signature", M, y + 4, tp(8f, color = muted))
@@ -402,6 +412,28 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             if (y + 12f > H - 26f) { finishPage(); newPage() }
             text(shop.footerNote, W / 2, y, tp(8.5f, true, red), Paint.Align.CENTER)
             y += 14f
+        }
+    }
+
+    /** Customer document photos (Aadhaar, PAN ...), printed large — up to two per page — so every detail is readable. */
+    private fun documentsSection() {
+        if (!shop.printDocuments || inv.kind == InvoiceType.ESTIMATE) return
+        val docs = inv.documents.mapNotNull { d -> photos[d.id]?.let { Images.decode(it) }?.let { d to it } }
+        if (docs.isEmpty()) return
+        val maxH = 330f
+        docs.forEachIndexed { i, (doc, bmp) ->
+            val scale = minOf(CW / bmp.width, maxH / bmp.height)
+            val w = bmp.width * scale; val h = bmp.height * scale
+            val head = if (i == 0) 22f else 0f
+            ensure(head + 16f + h + 14f)
+            if (i == 0 || y <= M + 20f) {
+                text("CUSTOMER DOCUMENTS", M, y, tp(9f, true, ink)); y += 16f
+            }
+            text("${i + 1}. ${doc.label}", M, y, tp(8.5f, true, red)); y += 14f
+            val left = M + (CW - w) / 2
+            c.drawBitmap(bmp, null, RectF(left, y, left + w, y + h), Paint(Paint.FILTER_BITMAP_FLAG))
+            c.drawRect(left, y, left + w, y + h, Paint().apply { style = Paint.Style.STROKE; color = line; strokeWidth = 0.6f })
+            y += h + 14f
         }
     }
 

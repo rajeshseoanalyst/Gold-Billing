@@ -63,6 +63,9 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
     var original by remember { mutableStateOf<Invoice?>(null) }
     var loading by remember { mutableStateOf(editId != null) }
     var viewPhoto by remember { mutableStateOf<String?>(null) }
+    var custSign by remember { mutableStateOf("") }          // photo id of the customer's signature
+    var signPad by remember { mutableStateOf(false) }
+    val documents = remember { mutableStateListOf<DocImage>() }     // customer document photos
     val customers by remember { Repo.customersFlow() }.collectAsState(initial = emptyList())
 
     // customer
@@ -130,6 +133,8 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
         oldItems.clear(); oldItems.addAll(inv.oldItems)
         discount = s(inv.discount); includeGst = inv.includeGst; interOverride = inv.interState
         payMode = inv.payMode; paid = s(inv.amountPaid); remarks = inv.remarks; terms = inv.terms.ifBlank { shop.terms }
+        custSign = inv.customerSign
+        documents.clear(); documents.addAll(inv.documents)
         loading = false
     }
 
@@ -151,7 +156,8 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
             if (withIds) cVoter.trim() else "", if (withIds) cDl.trim() else "")),
         items = items.toList(), oldItems = oldItems.toList(), discount = d(discount), gstRate = shop.gstRate,
         includeGst = includeGst, interState = interState, payMode = payMode, amountPaid = d(paid),
-        remarks = remarks.trim(), terms = terms
+        remarks = remarks.trim(), terms = terms, customerSign = if (withPhotos) custSign else "",
+        documents = if (withPhotos) documents.toList() else emptyList()
     )
     val totals = draft().totals
 
@@ -307,6 +313,67 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                     }
                 }
 
+                // ---------- customer documents (not for estimates) ----------
+                if (withPhotos) item {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    SectionCard("Customer documents (optional)") {
+                        Text("Photo of Aadhaar, PAN, passport or other ID. Printed large on the bill so every detail can be read.",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        documents.forEachIndexed { i, doc ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                ProductThumb(doc.id, 64, pendingPhotos, onClick = { viewPhoto = doc.id })
+                                Spacer(Modifier.width(10.dp))
+                                DropdownField("Document", doc.label, DocImage.LABELS, Modifier.weight(1f)) { l -> documents[i] = doc.copy(label = l) }
+                                IconButton(onClick = { documents.removeAt(i) }) { Icon(Icons.Filled.Delete, "Remove", tint = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                        if (documents.size < DocImage.MAX) {
+                            PhotoButtons(PicKind.DOCUMENT, onPicked = { b64 ->
+                                if (b64 == null) com.digiglobal.goldbill.util.Share.toast(ctx, "Couldn't read that picture")
+                                else {
+                                    val id = Repo.newPhotoId(); pendingPhotos[id] = b64
+                                    val used = documents.map { it.label }
+                                    val next = DocImage.LABELS.firstOrNull { it !in used && (documents.isNotEmpty() || it.startsWith("Aadhaar")) } ?: "Other document"
+                                    documents.add(DocImage(id, next))
+                                }
+                            })
+                            Text("Up to ${DocImage.MAX} documents (e.g. Aadhaar front and back). Hold the phone flat over the card in good light.",
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                // ---------- customer's signature (not for estimates) ----------
+                if (withPhotos) item {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    SectionCard(if (type == InvoiceType.PURCHASE) "Seller's signature (optional)" else "Customer's signature (optional)") {
+                        if (custSign.isNotBlank()) {
+                            Surface(shape = RoundedCornerShape(10.dp), color = androidx.compose.ui.graphics.Color.White,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                                val pic = rememberProductPhoto(custSign, pendingPhotos)
+                                Box(Modifier.fillMaxWidth().height(90.dp).padding(6.dp), contentAlignment = Alignment.Center) {
+                                    if (pic != null) androidx.compose.foundation.Image(pic, "Signature",
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                                    else CircularProgressIndicator(Modifier.size(20.dp))
+                                }
+                            }
+                            TextButton(onClick = { custSign = "" }) { Icon(Icons.Filled.Delete, null); Text("Remove and sign again") }
+                        } else {
+                            Text("Prints above the signature line on the bill.", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Button(onClick = { signPad = true }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Filled.Gesture, null); Spacer(Modifier.width(6.dp)); Text("Sign on the screen")
+                            }
+                            Text("or upload a photo of a signed paper:", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            PhotoButtons(PicKind.SIGNATURE, onPicked = { b64 ->
+                                if (b64 == null) com.digiglobal.goldbill.util.Share.toast(ctx, "Couldn't read that picture")
+                                else { val id = Repo.newPhotoId(); pendingPhotos[id] = b64; custSign = id }
+                            })
+                        }
+                    }
+                }
+
                 // ---------- totals ----------
                 item { TotalsCard(type, totals, interState, shop.gstRate) }
                 error?.let { e -> item { Text(e, color = MaterialTheme.colorScheme.error) } }
@@ -370,6 +437,10 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
         }
     }
     viewPhoto?.let { PhotoViewer(it, pendingPhotos) { viewPhoto = null } }
+    if (signPad) SignaturePadDialog(if (type == InvoiceType.PURCHASE) "Seller's signature" else "Customer's signature",
+        onDismiss = { signPad = false }) { b64 ->
+        val id = Repo.newPhotoId(); pendingPhotos[id] = b64; custSign = id; signPad = false
+    }
 }
 
 fun fmtPct(v: Double) = if (v == Math.floor(v)) v.toLong().toString() else v.toString()

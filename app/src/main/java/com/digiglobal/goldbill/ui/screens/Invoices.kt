@@ -205,6 +205,29 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
                 }
             }
             item { TotalsCard(inv.kind, t, inv.interState, inv.gstRate) }
+            if (inv.documents.isNotEmpty() && inv.kind != InvoiceType.ESTIMATE) item {
+                SectionCard("Customer documents") {
+                    inv.documents.forEach { doc ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ProductThumb(doc.id, 72, onClick = { viewPhoto = doc.id })
+                            Spacer(Modifier.width(12.dp))
+                            Text(doc.label, Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                        }
+                    }
+                    Text("Tap a document to see it full size.", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (inv.customerSign.isNotBlank() && inv.kind != InvoiceType.ESTIMATE) item {
+                SectionCard(if (inv.kind == InvoiceType.PURCHASE) "Seller's signature" else "Customer's signature") {
+                    val pic = rememberProductPhoto(inv.customerSign)
+                    Box(Modifier.fillMaxWidth().height(80.dp), contentAlignment = Alignment.CenterStart) {
+                        if (pic != null) androidx.compose.foundation.Image(pic, "Signature",
+                            contentScale = androidx.compose.ui.layout.ContentScale.Fit, modifier = Modifier.fillMaxHeight())
+                        else CircularProgressIndicator(Modifier.size(20.dp))
+                    }
+                }
+            }
             if (inv.remarks.isNotBlank()) item { SectionCard("Remarks") { Text(inv.remarks) } }
 
             // ---- more actions ----

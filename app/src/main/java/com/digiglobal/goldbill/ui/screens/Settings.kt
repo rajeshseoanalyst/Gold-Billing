@@ -55,6 +55,7 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
     var sigName by remember(shop) { mutableStateOf(shop.signatoryName) }
     var sigTitle by remember(shop) { mutableStateOf(shop.signatoryTitle) }
     var showSig by remember(shop) { mutableStateOf(shop.showSignature) }
+    var printDocs by remember(shop) { mutableStateOf(shop.printDocuments) }
     var saving by remember { mutableStateOf(false) }
 
     @Composable fun field(label: String, v: String, set: (String) -> Unit, lines: Int = 1, kb: KeyboardType = KeyboardType.Text) =
@@ -132,6 +133,17 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
                 Text("Prints as: For ${name.ifBlank { "your shop" }} · signature · ${sigName.ifBlank { "" }} ${sigTitle.ifBlank { "Authorised Signatory" }}".replace("  ", " "),
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            SectionCard("Customer documents") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Print customer document photos on bills")
+                        Text("Aadhaar, PAN or other ID photos taken while billing are printed large at the end of the bill. " +
+                            "Switch off to keep them only in the app.", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(printDocs, { printDocs = it }, enabled = admin)
+                }
+            }
             SectionCard("Terms & conditions") {
                 field("One term per line", terms, { terms = it }, 6)
                 field("Thank-you note at the bottom", footer, { footer = it })
@@ -144,7 +156,7 @@ fun ShopSettingsScreen(me: UserProfile, shop: ShopSettings, nav: NavController) 
                         Repo.saveShop(ShopSettings(name.trim(), address.trim(), phone.trim(), email.trim(), gstin.trim(), state, pan.trim(),
                             bank.trim(), acc.trim(), ifsc.trim(), upi.trim(), terms.trim(), footer.trim(), gstRate.toDoubleOrNull() ?: 3.0,
                             invP.ifBlank { "INV" }, purP.ifBlank { "PUR" }, estP.ifBlank { "EST" }, hsnG.ifBlank { "7113" }, hsnS.ifBlank { "7113" },
-                            signature, sigName.trim(), sigTitle.trim().ifBlank { "Authorised Signatory" }, showSig))
+                            signature, sigName.trim(), sigTitle.trim().ifBlank { "Authorised Signatory" }, showSig, printDocs))
                         Share.toast(ctx, "Saved"); nav.popBackStack()
                     } catch (e: Exception) { Share.toast(ctx, e.message ?: "Couldn't save") } finally { saving = false }
                 }

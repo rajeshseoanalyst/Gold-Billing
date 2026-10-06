@@ -97,7 +97,8 @@ fun Invoice.toMap(): Map<String, Any> {
         "discount" to discount, "gstRate" to gstRate, "includeGst" to includeGst, "interState" to interState,
         "payMode" to payMode, "amountPaid" to amountPaid, "remarks" to remarks, "terms" to terms,
         "createdBy" to createdBy, "createdByName" to createdByName, "status" to status, "cancelReason" to cancelReason,
-        "editedAt" to editedAt, "editedByName" to editedByName, "editCount" to editCount,
+        "editedAt" to editedAt, "editedByName" to editedByName, "editCount" to editCount, "customerSign" to customerSign,
+        "documents" to documents.map { mapOf("id" to it.id, "label" to it.label) },
         "taxable" to t.taxable, "gst" to t.gst, "grandTotal" to t.grandTotal, "oldTotal" to t.oldTotal, "net" to t.net,
         "goldOut" to t.goldOut, "silverOut" to t.silverOut, "goldIn" to t.goldIn, "silverIn" to t.silverIn
     )
@@ -112,7 +113,11 @@ fun DocumentSnapshot.toInvoice(): Invoice = Invoice(
     interState = bool("interState", false), payMode = getString("payMode") ?: "Cash", amountPaid = dbl("amountPaid"),
     remarks = str("remarks"), terms = str("terms"), createdBy = str("createdBy"), createdByName = str("createdByName"),
     status = getString("status") ?: "active", cancelReason = str("cancelReason"),
-    editedAt = lng("editedAt"), editedByName = str("editedByName"), editCount = (getLong("editCount") ?: 0L).toInt()
+    editedAt = lng("editedAt"), editedByName = str("editedByName"), editCount = (getLong("editCount") ?: 0L).toInt(),
+    customerSign = str("customerSign"),
+    documents = (get("documents") as? List<*>)?.mapNotNull { m ->
+        (m as? Map<*, *>)?.let { DocImage(it["id"]?.toString() ?: "", it["label"]?.toString() ?: "ID document") }
+    }?.filter { it.id.isNotBlank() } ?: emptyList()
 )
 
 fun ShopSettings.toMap(): Map<String, Any> = mapOf(
@@ -121,7 +126,8 @@ fun ShopSettings.toMap(): Map<String, Any> = mapOf(
     "upiId" to upiId, "terms" to terms, "footerNote" to footerNote, "gstRate" to gstRate,
     "invoicePrefix" to invoicePrefix, "purchasePrefix" to purchasePrefix, "estimatePrefix" to estimatePrefix,
     "hsnGold" to hsnGold, "hsnSilver" to hsnSilver,
-    "signature" to signature, "signatoryName" to signatoryName, "signatoryTitle" to signatoryTitle, "showSignature" to showSignature
+    "signature" to signature, "signatoryName" to signatoryName, "signatoryTitle" to signatoryTitle, "showSignature" to showSignature,
+    "printDocuments" to printDocuments
 )
 
 fun DocumentSnapshot.toShop(): ShopSettings = if (!exists()) ShopSettings() else ShopSettings(
@@ -134,7 +140,8 @@ fun DocumentSnapshot.toShop(): ShopSettings = if (!exists()) ShopSettings() else
     hsnGold = getString("hsnGold") ?: "7113", hsnSilver = getString("hsnSilver") ?: "7113",
     signature = str("signature"), signatoryName = str("signatoryName"),
     signatoryTitle = getString("signatoryTitle")?.ifBlank { null } ?: "Authorised Signatory",
-    showSignature = getBoolean("showSignature") ?: true
+    showSignature = getBoolean("showSignature") ?: true,
+    printDocuments = getBoolean("printDocuments") ?: true
 )
 
 fun Rates.toMap(): Map<String, Any> = mapOf(

@@ -218,7 +218,8 @@ object Repo {
 
     /** Saves the photos the bill uses that aren't stored yet. */
     private suspend fun storePhotos(inv: Invoice, pending: Map<String, String>) {
-        val used = (inv.items.map { it.photo } + inv.oldItems.map { it.photo }).filter { it.isNotBlank() }.toSet()
+        val used = (inv.items.map { it.photo } + inv.oldItems.map { it.photo } + inv.customerSign + inv.documents.map { it.id })
+            .filter { it.isNotBlank() }.toSet()
         val batch = db.batch(); var n = 0
         pending.filterKeys { it in used }.forEach { (id, data) ->
             batch.set(photos().document(id), mapOf("data" to data, "invoiceId" to inv.id, "by" to (uid ?: ""), "at" to now()))
@@ -235,7 +236,8 @@ object Repo {
 
     /** All photos of a bill, id → picture, for the PDF and the bill screen. */
     suspend fun photosOf(inv: Invoice): Map<String, String> =
-        (inv.items.map { it.photo } + inv.oldItems.map { it.photo }).filter { it.isNotBlank() }.distinct()
+        (inv.items.map { it.photo } + inv.oldItems.map { it.photo } + inv.customerSign + inv.documents.map { it.id })
+            .filter { it.isNotBlank() }.distinct()
             .mapNotNull { id -> photo(id)?.let { id to it } }.toMap()
 
     suspend fun invoiceOnce(id: String): Invoice? =
