@@ -1,6 +1,8 @@
 package com.digiglobal.goldbill.data
 
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.DocumentReference
@@ -28,6 +30,8 @@ object Repo {
     private fun users() = db.collection("gb_users")
     private fun orgs() = db.collection("gb_orgs")
     private fun codes() = db.collection("gb_codes")
+    private fun invites() = db.collection("gb_invites")
+    private fun emailKey(e: String) = e.trim().lowercase()
     private fun orgDoc(orgId: String? = null) = orgs().document(orgId ?: me?.orgId?.ifBlank { null } ?: "__none")
     private fun invoices(orgId: String? = null) = orgDoc(orgId).collection("invoices")
     private fun customers() = orgDoc().collection("customers")
@@ -103,26 +107,49 @@ object Repo {
     private val codeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     private fun randomCode() = (1..6).map { codeChars.random() }.joinToString("")
 
-    suspend fun createCompany(shopName: String, name: String, phone: String, logo: String, photo: String) {
-        val id = uid ?: error("Not signed in")
-        val orgRef = orgs().document()
+    /**
+     * Creates a shop with [user] as its admin, using the given Firestore instance.
+     * The owner console calls this with a separate Firebase instance signed in as the new admin,
+     * so the shop is created by the admin's own account and nothing in it points back to the owner.
+     */
+    private suspend fun createCompanyIn(fdb: FirebaseFirestore, user: FirebaseUser, shopName: String, name: String, phone: String, logo: String, photo: String) {
+        val orgRef = fdb.collection("gb_orgs").document()
         var done = false
         repeat(5) {
             if (done) return@repeat
             val code = randomCode()
-            val codeRef = codes().document(code)
-            done = db.runTransaction { tx ->
+            val codeRef = fdb.collection("gb_codes").document(code)
+            done = fdb.runTransaction { tx ->
                 if (tx.get(codeRef).exists()) return@runTransaction false
-                tx.set(orgRef, mapOf("name" to shopName.trim(), "code" to code, "createdBy" to id, "createdAt" to now(),
+                tx.set(orgRef, mapOf("name" to shopName.trim(), "code" to code, "createdBy" to user.uid, "createdAt" to now(),
                     "suspended" to false, "logo" to logo))
                 tx.set(codeRef, mapOf("orgId" to orgRef.id))
-                tx.set(users().document(id), newProfile(orgRef.id, name, phone, "admin", true, photo))
+                tx.set(fdb.collection("gb_users").document(user.uid), mapOf(
+                    "orgId" to orgRef.id, "name" to name.trim(), "email" to (user.email ?: ""), "phone" to phone.trim(),
+                    "role" to "admin", "approved" to true, "photo" to photo))
                 true
             }.await()
         }
-        if (!done) error("Couldn't create the company, please try again")
-        me = getUser(id)
-        runCatching { settings().document("shop").set(ShopSettings(name = shopName.trim(), phone = phone.trim()).toMap()).await() }
+        if (!done) error("Couldn't create the shop, please try again")
+        runCatching {
+            fdb.collection("gb_orgs").document(orgRef.id).collection("settings").document("shop")
+                .set(ShopSettings(name = shopName.trim(), phone = phone.trim()).toMap()).await()
+        }
+        user.email?.let { e -> runCatching { fdb.collection("gb_invites").document(emailKey(e)).delete().await() } }
+    }
+
+    /** An invited admin sets up the shop the owner prepared for them. */
+    suspend fun createCompany(shopName: String, name: String, phone: String, logo: String, photo: String) {
+        val user = auth.currentUser ?: error("Not signed in")
+        if (myInvite() == null) error("New shops are set up by your software provider. Ask them to add your email.")
+        createCompanyIn(db, user, shopName, name, phone, logo, photo)
+        me = getUser(user.uid)
+    }
+
+    /** The shop the owner has prepared for the signed-in email, if any. */
+    suspend fun myInvite(): Invite? {
+        val e = auth.currentUser?.email ?: return null
+        return runCatching { invites().document(emailKey(e)).get().await().takeIf { it.exists() }?.toInvite() }.getOrNull()
     }
 
     suspend fun joinCompany(code: String, name: String, phone: String, photo: String) {
@@ -223,4 +250,35 @@ object Repo {
         root.delete().await()
     }
 
+
+    // ---------------- owner: create shops & admins ----------------
+
+    fun invitesFlow(): Flow<List<Invite>> = queryFlow(invites()) { it.toInvite() }
+    suspend fun deleteInvite(email: String) { invites().document(emailKey(email)).delete().await() }
+
+    /**
+     * Owner creates a shop and its admin login. Returns true when the account and shop were created now;
+     * false when the email already has an account (e.g. a Call CRM login) or no password was given — then the
+     * shop waits as an invite and is set up the first time that person signs in.
+     * A second Firebase instance is used so the owner stays signed in and the shop belongs to the admin's account.
+     */
+    suspend fun ownerCreateShop(shopName: String, adminName: String, phone: String, email: String, password: String): Boolean {
+        val key = emailKey(email)
+        invites().document(key).set(mapOf("email" to key, "shopName" to shopName.trim(), "name" to adminName.trim(),
+            "phone" to phone.trim(), "createdAt" to now())).await()
+        if (password.length < 6) return false
+        val base = FirebaseApp.getInstance()
+        val app = FirebaseApp.getApps(base.applicationContext).firstOrNull { it.name == "gb-creator" }
+            ?: FirebaseApp.initializeApp(base.applicationContext, base.options, "gb-creator")
+        val a2 = FirebaseAuth.getInstance(app)
+        val d2 = FirebaseFirestore.getInstance(app)
+        try {
+            val user = try {
+                a2.createUserWithEmailAndPassword(key, password).await().user ?: error("Couldn't create the login")
+            } catch (e: FirebaseAuthUserCollisionException) { return false }
+            runCatching { user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(adminName.trim()).build()).await() }
+            createCompanyIn(d2, user, shopName, adminName, phone, "", "")
+            return true
+        } finally { a2.signOut() }
+    }
 }

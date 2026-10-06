@@ -56,7 +56,7 @@ fun AppRoot() {
             val o = org
             when {
                 o === LOADING_ORG -> Loading()
-                o == null -> BlockedScreen("Shop not found", "This shop was deleted. You can create a new shop or join another one with a code.")
+                o == null -> BlockedScreen("Shop not found", "This shop was deleted. You can join another shop with its code.")
                 o.suspended -> BlockedScreen("${o.name} is suspended", "This shop's access has been paused. Please contact the app provider.")
                 !p.approved -> PendingScreen(p, o)
                 else -> MainScaffold(p, o, isOwner)
@@ -161,6 +161,16 @@ fun OnboardingScreen(displayName: String, isOwner: Boolean, onOpenOwner: () -> U
     var logo by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // New shops are prepared by the owner. If one is waiting for this email, offer to set it up.
+    var invite by remember { mutableStateOf<Invite?>(null) }
+    LaunchedEffect(Unit) {
+        Repo.myInvite()?.let { inv ->
+            invite = inv; create = true
+            if (company.isBlank()) company = inv.shopName
+            if (name.isBlank()) name = inv.name
+            if (phone.isBlank()) phone = inv.phone
+        }
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -171,14 +181,15 @@ fun OnboardingScreen(displayName: String, isOwner: Boolean, onOpenOwner: () -> U
         Spacer(Modifier.height(12.dp))
         Text("Set up your workspace", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            "Join your shop with its code, or create a new shop for your business.",
+            if (invite != null) "Your shop ${invite?.shopName.orEmpty()} is ready to set up. You'll be its admin."
+            else "Enter the shop code from your shop's admin to join.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(24.dp))
 
-        TabRow(selectedTabIndex = if (create) 1 else 0, containerColor = MaterialTheme.colorScheme.background) {
+        if (invite != null) TabRow(selectedTabIndex = if (create) 1 else 0, containerColor = MaterialTheme.colorScheme.background) {
             Tab(selected = !create, onClick = { create = false; error = null }, text = { Text("Join a shop") })
-            Tab(selected = create, onClick = { create = true; error = null }, text = { Text("Create a shop") })
+            Tab(selected = create, onClick = { create = true; error = null }, text = { Text("Set up my shop") })
         }
         Spacer(Modifier.height(16.dp))
 
@@ -241,12 +252,12 @@ fun OnboardingScreen(displayName: String, isOwner: Boolean, onOpenOwner: () -> U
             modifier = Modifier.fillMaxWidth().height(50.dp)
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            else Text(if (create) "Create shop" else "Send join request")
+            else Text(if (create) "Set up shop" else "Send join request")
         }
         Spacer(Modifier.height(10.dp))
         Text(
             if (create) "You'll be the shop's admin and get a code to share with your billing staff."
-            else "Your admin will see your request under More → Team and approve you.",
+            else "Your admin will see your request under More → Team and approve you. Opening a new shop? Ask your software provider to add your email.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(24.dp))

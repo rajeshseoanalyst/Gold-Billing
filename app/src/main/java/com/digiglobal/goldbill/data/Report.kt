@@ -67,7 +67,7 @@ object BillReport {
         // ---------- Bills ----------
         val billHeader = buildList {
             add("Date & time"); if (showShop) add("Shop")
-            addAll(listOf("Bill no", "Type", "Status", "Customer", "Phone", "Customer GSTIN", "Billed by",
+            addAll(listOf("Bill no", "Type", "Status", "Customer", "Phone", "Customer GSTIN", "Customer ID proof", "Billed by",
                 "Gold out (g)", "Silver out (g)", "Gold in (g)", "Silver in (g)", "Items total", "Discount", "Taxable",
                 "CGST", "SGST", "IGST", "Invoice total", "Old gold value", "Received (+) / Paid (−)", "Payment mode", "Amount paid", "Balance", "Remarks"))
         }
@@ -76,7 +76,7 @@ object BillReport {
             buildList {
                 add(Xlsx.date(b.at)); if (showShop) add(Xlsx.text(org.name))
                 add(Xlsx.text(b.number)); add(Xlsx.text(b.kind.label)); add(Xlsx.text(if (b.isCancelled) "Cancelled" else "Active"))
-                add(Xlsx.text(b.customer.name)); add(Xlsx.text(b.customer.phone)); add(Xlsx.text(b.customer.gstin)); add(Xlsx.text(b.createdByName))
+                add(Xlsx.text(b.customer.name)); add(Xlsx.text(b.customer.phone)); add(Xlsx.text(b.customer.gstin)); add(Xlsx.text(IdProof.printable(b.customer).joinToString(" | "))); add(Xlsx.text(b.createdByName))
                 add(g(t.goldOut)); add(g(t.silverOut)); add(g(t.goldIn)); add(g(t.silverIn))
                 add(n(t.itemsTotal)); add(n(t.discount)); add(n(t.taxable)); add(n(t.cgst)); add(n(t.sgst)); add(n(t.igst))
                 add(n(t.grandTotal)); add(n(t.oldTotal)); add(n(t.net)); add(Xlsx.text(b.payMode)); add(n(b.amountPaid)); add(n(t.balance))
@@ -143,7 +143,7 @@ object BillReport {
             Xlsx.Sheet("Summary", sumHeader, sumRows, buildList { if (showShop) add(24); addAll(listOf(14, 8, 15, 13, 14, 12, 13, 14, 12)) }),
             Xlsx.Sheet("By user", userHeader, userRows, buildList { if (showShop) add(24); addAll(listOf(20, 8, 14, 14, 14, 14, 15)) }),
             Xlsx.Sheet("Bills", billHeader, billRows, buildList { add(22); if (showShop) add(22)
-                addAll(listOf(20, 11, 10, 22, 14, 18, 16, 12, 12, 12, 12, 13, 11, 13, 11, 11, 11, 13, 14, 18, 14, 12, 12, 36)) }),
+                addAll(listOf(20, 11, 10, 22, 14, 18, 30, 16, 12, 12, 12, 12, 13, 11, 13, 11, 11, 11, 13, 14, 18, 14, 12, 12, 36)) }),
             Xlsx.Sheet("Items", itemHeader, itemRows, buildList { add(22); if (showShop) add(22)
                 addAll(listOf(20, 11, 13, 20, 9, 12, 8, 9, 6, 12, 14, 11, 11, 12, 12, 13)) }),
             Xlsx.Sheet("GST", gstHeader, gstRows, buildList { add(22); if (showShop) add(22); addAll(listOf(20, 22, 18, 22, 14, 11, 11, 11, 14)) }),

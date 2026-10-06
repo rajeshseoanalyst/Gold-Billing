@@ -99,7 +99,12 @@ data class Customer(
     val gstin: String = "",
     val pan: String = "",
     val stateCode: String = "",
-    val remarks: String = ""
+    val remarks: String = "",
+    // Identity proof: at least one is required on every bill.
+    val aadhaar: String = "",
+    val passport: String = "",
+    val voterId: String = "",
+    val drivingLicence: String = ""
 )
 
 data class Invoice(
@@ -336,3 +341,63 @@ data class Rates(
     val updatedAt: Long = 0L,
     val updatedBy: String = ""
 )
+
+/** Customer identity proof: Aadhaar, passport, voter ID, driving licence. */
+object IdProof {
+    private val verhoeffD = arrayOf(
+        intArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), intArrayOf(1, 2, 3, 4, 0, 6, 7, 8, 9, 5), intArrayOf(2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+        intArrayOf(3, 4, 0, 1, 2, 8, 9, 5, 6, 7), intArrayOf(4, 0, 1, 2, 3, 9, 5, 6, 7, 8), intArrayOf(5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+        intArrayOf(6, 5, 9, 8, 7, 1, 0, 4, 3, 2), intArrayOf(7, 6, 5, 9, 8, 2, 1, 0, 4, 3), intArrayOf(8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+        intArrayOf(9, 8, 7, 6, 5, 4, 3, 2, 1, 0))
+    private val verhoeffP = arrayOf(
+        intArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), intArrayOf(1, 5, 7, 6, 2, 8, 3, 0, 9, 4), intArrayOf(5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+        intArrayOf(8, 9, 1, 6, 0, 4, 3, 5, 2, 7), intArrayOf(9, 4, 5, 3, 1, 2, 6, 8, 7, 0), intArrayOf(4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+        intArrayOf(2, 7, 9, 3, 8, 0, 6, 4, 1, 5), intArrayOf(7, 0, 4, 6, 9, 1, 3, 2, 5, 8))
+
+    fun cleanAadhaar(v: String) = v.filter { it.isDigit() }
+    fun cleanCode(v: String) = v.uppercase().filter { it.isLetterOrDigit() }
+
+    /** 12 digits, doesn't start with 0 or 1, and passes the Verhoeff checksum used by UIDAI. */
+    fun isValidAadhaar(v: String): Boolean {
+        val d = cleanAadhaar(v)
+        if (d.length != 12 || d[0] == '0' || d[0] == '1') return false
+        var c = 0
+        d.reversed().forEachIndexed { i, ch -> c = verhoeffD[c][verhoeffP[i % 8][ch - '0']] }
+        return c == 0
+    }
+    /** Indian passport: one letter + 7 digits, e.g. K1234567. */
+    fun isValidPassport(v: String) = Regex("^[A-Z][0-9]{7}$").matches(cleanCode(v))
+    /** Voter ID (EPIC): 3 letters + 7 digits, e.g. ABC1234567. */
+    fun isValidVoterId(v: String) = Regex("^[A-Z]{3}[0-9]{7}$").matches(cleanCode(v))
+    /** Driving licence: state + RTO code + number, e.g. MH12 20110012345 (older formats vary, so kept loose). */
+    fun isValidDl(v: String): Boolean { val c = cleanCode(v); return c.length in 10..18 && Regex("^[A-Z]{2}[0-9]{1,2}[A-Z0-9]+$").matches(c) }
+
+    /** Only the last 4 Aadhaar digits are ever printed or shown in lists. */
+    fun maskAadhaar(v: String): String { val d = cleanAadhaar(v); return if (d.length < 4) "" else "XXXX XXXX ${d.takeLast(4)}" }
+    fun formatAadhaar(v: String) = cleanAadhaar(v).chunked(4).joinToString(" ")
+
+    fun hasAny(c: Customer) = listOf(c.aadhaar, c.passport, c.voterId, c.drivingLicence).any { it.isNotBlank() }
+
+    /** Null when at least one ID is entered and every ID entered looks right; otherwise what to fix. */
+    fun problem(c: Customer): String? {
+        if (!hasAny(c)) return "Enter at least one ID proof: Aadhaar, passport, voter ID or driving licence"
+        if (c.aadhaar.isNotBlank() && !isValidAadhaar(c.aadhaar)) return "Aadhaar number is not valid — check the 12 digits"
+        if (c.passport.isNotBlank() && !isValidPassport(c.passport)) return "Passport number is not valid (e.g. K1234567)"
+        if (c.voterId.isNotBlank() && !isValidVoterId(c.voterId)) return "Voter ID is not valid (e.g. ABC1234567)"
+        if (c.drivingLicence.isNotBlank() && !isValidDl(c.drivingLicence)) return "Driving licence number is not valid (e.g. MH12 20110012345)"
+        return null
+    }
+
+    /** Tidy form for saving: Aadhaar as "1234 5678 9012", the others upper-case without spaces. */
+    fun normalise(c: Customer) = c.copy(
+        aadhaar = if (c.aadhaar.isBlank()) "" else formatAadhaar(c.aadhaar),
+        passport = cleanCode(c.passport), voterId = cleanCode(c.voterId), drivingLicence = cleanCode(c.drivingLicence))
+
+    /** Lines for invoices, lists and reports — Aadhaar always masked. */
+    fun printable(c: Customer): List<String> = buildList {
+        if (c.aadhaar.isNotBlank()) add("Aadhaar: ${maskAadhaar(c.aadhaar)}")
+        if (c.passport.isNotBlank()) add("Passport: ${c.passport}")
+        if (c.voterId.isNotBlank()) add("Voter ID: ${c.voterId}")
+        if (c.drivingLicence.isNotBlank()) add("DL: ${c.drivingLicence}")
+    }
+}

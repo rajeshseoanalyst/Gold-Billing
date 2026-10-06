@@ -68,6 +68,17 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
     var cRemarks by remember { mutableStateOf("") }
     var cId by remember { mutableStateOf("") }
     var moreCustomer by remember { mutableStateOf(false) }
+    var cAadhaar by remember { mutableStateOf("") }
+    var cPassport by remember { mutableStateOf("") }
+    var cVoter by remember { mutableStateOf("") }
+    var cDl by remember { mutableStateOf("") }
+
+    fun fillFrom(c: Customer, withPhone: Boolean) {
+        cId = c.id; cName = c.name; if (withPhone) cPhone = c.phone; cEmail = c.email; cAddress = c.address; cGstin = c.gstin; cPan = c.pan
+        if (c.stateCode.isNotBlank()) cState = c.stateCode
+        cRemarks = c.remarks
+        cAadhaar = c.aadhaar; cPassport = c.passport; cVoter = c.voterId; cDl = c.drivingLicence
+    }
 
     // lines
     val items = remember { mutableStateListOf<SaleItem>() }
@@ -93,10 +104,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
     // Copy from an estimate (or another bill) when "Convert" / "Duplicate" was tapped.
     LaunchedEffect(Unit) {
         Prefill.take()?.let { src ->
-            val c = src.customer
-            cId = c.id; cName = c.name; cPhone = c.phone; cEmail = c.email; cAddress = c.address; cGstin = c.gstin; cPan = c.pan
-            if (c.stateCode.isNotBlank()) cState = c.stateCode
-            cRemarks = c.remarks
+            fillFrom(src.customer, withPhone = true)
             if (type.hasNewItems) { items.clear(); items.addAll(src.items) }
             if (type.hasOldItems) { oldItems.clear(); oldItems.addAll(src.oldItems) }
             discount = s(src.discount); remarks = src.remarks; payMode = src.payMode
@@ -105,7 +113,8 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
 
     fun draft() = Invoice(
         type = type.code,
-        customer = Customer(cId, cName.trim(), cPhone.trim(), cEmail.trim(), cAddress.trim(), cGstin.trim().uppercase(), cPan.trim().uppercase(), cState, cRemarks.trim()),
+        customer = IdProof.normalise(Customer(cId, cName.trim(), cPhone.trim(), cEmail.trim(), cAddress.trim(), cGstin.trim().uppercase(),
+            cPan.trim().uppercase(), cState, cRemarks.trim(), cAadhaar.trim(), cPassport.trim(), cVoter.trim(), cDl.trim())),
         items = items.toList(), oldItems = oldItems.toList(), discount = d(discount), gstRate = shop.gstRate,
         includeGst = includeGst, interState = interState, payMode = payMode, amountPaid = d(paid),
         remarks = remarks.trim(), terms = terms
@@ -131,11 +140,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         OutlinedTextField(cPhone, { v ->
                             cPhone = v
                             val digits = v.filter { it.isDigit() }.takeLast(10)
-                            if (digits.length == 10) customers.firstOrNull { it.phone.filter { c -> c.isDigit() }.takeLast(10) == digits }?.let { c ->
-                                cId = c.id; cName = c.name; cEmail = c.email; cAddress = c.address; cGstin = c.gstin; cPan = c.pan
-                                if (c.stateCode.isNotBlank()) cState = c.stateCode
-                                cRemarks = c.remarks
-                            }
+                            if (digits.length == 10) customers.firstOrNull { it.phone.filter { c -> c.isDigit() }.takeLast(10) == digits }?.let { c -> fillFrom(c, withPhone = false) }
                         }, label = { Text("Mobile / WhatsApp number") }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth(),
                             supportingText = { if (cId.isNotBlank()) Text("Existing customer — details filled in") })
@@ -145,10 +150,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         if (cName.length >= 2 && cId.isBlank()) {
                             val matches = customers.filter { it.name.contains(cName, true) }.take(3)
                             matches.forEach { c ->
-                                AssistChip(onClick = {
-                                    cId = c.id; cName = c.name; cPhone = c.phone; cEmail = c.email; cAddress = c.address
-                                    cGstin = c.gstin; cPan = c.pan; if (c.stateCode.isNotBlank()) cState = c.stateCode; cRemarks = c.remarks
-                                }, label = { Text("${c.name} · ${c.phone}") }, leadingIcon = { Icon(Icons.Filled.Person, null) })
+                                AssistChip(onClick = { fillFrom(c, withPhone = true) }, label = { Text("${c.name} · ${c.phone}") }, leadingIcon = { Icon(Icons.Filled.Person, null) })
                             }
                         }
                         OutlinedTextField(cEmail, { cEmail = it.trim() }, label = { Text("Email (to send the invoice)") }, singleLine = true,
@@ -170,6 +172,35 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                                 Billing.states.map { "${it.second} (${it.first})" }, Modifier.fillMaxWidth()) { cState = Billing.stateCodeFromLabel(it) }
                             OutlinedTextField(cRemarks, { cRemarks = it }, label = { Text("Customer remarks (saved with customer)") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                         }
+                    }
+                }
+
+                // ---------- ID proof: at least one ----------
+                item {
+                    val okCount = listOf(cAadhaar, cPassport, cVoter, cDl).count { it.isNotBlank() }
+                    SectionCard("Customer ID proof *") {
+                        Text(if (okCount == 0) "Enter any one — Aadhaar, passport, voter ID or driving licence. The rest are optional."
+                             else "$okCount ID entered. Aadhaar prints as XXXX XXXX + last 4 digits only.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (okCount == 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedTextField(cAadhaar, { v -> cAadhaar = IdProof.formatAadhaar(v.filter { it.isDigit() }.take(12)) },
+                            label = { Text("Aadhaar number") }, placeholder = { Text("1234 5678 9012") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
+                            isError = cAadhaar.isNotBlank() && IdProof.cleanAadhaar(cAadhaar).length == 12 && !IdProof.isValidAadhaar(cAadhaar),
+                            supportingText = { if (cAadhaar.isNotBlank() && IdProof.cleanAadhaar(cAadhaar).length == 12 && !IdProof.isValidAadhaar(cAadhaar)) Text("Not a valid Aadhaar number") })
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(cPassport, { cPassport = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(8) },
+                                label = { Text("Passport no.") }, placeholder = { Text("K1234567") }, singleLine = true, modifier = Modifier.weight(1f),
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                                isError = cPassport.length == 8 && !IdProof.isValidPassport(cPassport))
+                            OutlinedTextField(cVoter, { cVoter = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(10) },
+                                label = { Text("Voter ID") }, placeholder = { Text("ABC1234567") }, singleLine = true, modifier = Modifier.weight(1f),
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                                isError = cVoter.length == 10 && !IdProof.isValidVoterId(cVoter))
+                        }
+                        OutlinedTextField(cDl, { cDl = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == ' ' || ch == '-' }.take(20) },
+                            label = { Text("Driving licence no.") }, placeholder = { Text("MH12 20110012345") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters), modifier = Modifier.fillMaxWidth())
                     }
                 }
 
@@ -258,6 +289,7 @@ fun InvoiceEditorScreen(type: InvoiceType, me: UserProfile, org: Org, shop: Shop
                         val dr = draft()
                         error = when {
                             dr.customer.name.isBlank() -> "Enter the customer's name"
+                            IdProof.problem(dr.customer) != null -> IdProof.problem(dr.customer)
                             type.hasNewItems && dr.items.isEmpty() -> "Add at least one item"
                             type.hasOldItems && dr.oldItems.isEmpty() -> "Add at least one old gold / silver item"
                             dr.items.any { it.grossWt <= 0 || it.rate <= 0 } -> "Every item needs a weight and a rate"

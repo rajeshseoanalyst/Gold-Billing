@@ -178,6 +178,7 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
             if (cu.address.isNotBlank()) add(cu.address)
             if (cu.gstin.isNotBlank()) add("GSTIN: ${cu.gstin}")
             if (cu.pan.isNotBlank()) add("PAN: ${cu.pan}")
+            IdProof.printable(cu).takeIf { it.isNotEmpty() }?.let { add(it.joinToString("  ·  ")) }
             Billing.stateLabel(cu.stateCode.ifBlank { shop.stateCode }).takeIf { it.isNotBlank() }?.let { add("State: $it") }
         }
         val pos = Billing.stateLabel(inv.customer.stateCode.ifBlank { shop.stateCode })
@@ -367,7 +368,8 @@ class InvoicePdf(private val shop: ShopSettings, private val shopName: String, p
         text("Authorised signatory", W - M, y + 4, tp(8f, color = muted), Paint.Align.RIGHT)
         y += 22f
         if (shop.footerNote.isNotBlank() && inv.kind != InvoiceType.PURCHASE) {
-            ensure(16f)
+            // The one-line thank-you may sit a little into the bottom margin rather than start a new page.
+            if (y + 12f > H - 26f) { finishPage(); newPage() }
             text(shop.footerNote, W / 2, y, tp(8.5f, true, red), Paint.Align.CENTER)
             y += 14f
         }

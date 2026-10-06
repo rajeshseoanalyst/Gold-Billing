@@ -49,12 +49,14 @@ fun DocumentSnapshot.toOrg() = Org(
 
 fun Customer.toMap(): Map<String, Any> = mapOf(
     "name" to name, "phone" to phone, "email" to email, "address" to address, "gstin" to gstin,
-    "pan" to pan, "stateCode" to stateCode, "remarks" to remarks
+    "pan" to pan, "stateCode" to stateCode, "remarks" to remarks,
+    "aadhaar" to aadhaar, "passport" to passport, "voterId" to voterId, "drivingLicence" to drivingLicence
 )
 
 private fun Map<*, *>.toCustomer(id: String = "") = Customer(
     id = id.ifBlank { s("id") }, name = s("name"), phone = s("phone"), email = s("email"), address = s("address"),
-    gstin = s("gstin"), pan = s("pan"), stateCode = s("stateCode"), remarks = s("remarks")
+    gstin = s("gstin"), pan = s("pan"), stateCode = s("stateCode"), remarks = s("remarks"),
+    aadhaar = s("aadhaar"), passport = s("passport"), voterId = s("voterId"), drivingLicence = s("drivingLicence")
 )
 
 fun DocumentSnapshot.toCustomer(): Customer = (data ?: emptyMap<String, Any>()).toCustomer(id)
@@ -138,3 +140,10 @@ fun DocumentSnapshot.toRates(): Rates = if (!exists()) Rates() else Rates(
     gold24 = dbl("gold24"), gold22 = dbl("gold22"), gold18 = dbl("gold18"), silver = dbl("silver"),
     updatedAt = lng("updatedAt"), updatedBy = str("updatedBy")
 )
+
+/** A shop the owner has prepared for an admin's email. Holds nothing about the owner. */
+data class Invite(val email: String = "", val shopName: String = "", val name: String = "", val phone: String = "", val createdAt: Long = 0L)
+
+fun DocumentSnapshot.toInvite() = Invite(
+    email = getString("email") ?: id, shopName = getString("shopName") ?: "", name = getString("name") ?: "",
+    phone = getString("phone") ?: "", createdAt = getLong("createdAt") ?: 0L)

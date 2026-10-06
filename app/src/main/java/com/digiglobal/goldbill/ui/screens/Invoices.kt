@@ -15,7 +15,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.digiglobal.goldbill.data.*
@@ -123,6 +125,9 @@ fun InvoiceViewScreen(id: String, me: UserProfile, org: Org, shop: ShopSettings,
                     Text(listOf(inv.customer.phone, inv.customer.email).filter { it.isNotBlank() }.joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (inv.customer.gstin.isNotBlank()) Text("GSTIN ${inv.customer.gstin}", style = MaterialTheme.typography.bodySmall)
+                    IdProof.printable(inv.customer).takeIf { it.isNotEmpty() }?.let {
+                        Text(it.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     Text("Billed by ${inv.createdByName} · ${inv.payMode}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (inv.isCancelled && inv.cancelReason.isNotBlank()) Text("Cancelled: ${inv.cancelReason}", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
@@ -264,6 +269,8 @@ fun CustomersScreen(me: UserProfile, nav: NavController) {
                             Column(Modifier.weight(1f)) {
                                 Text(c.name.ifBlank { c.phone }, fontWeight = FontWeight.SemiBold)
                                 Text(listOf(c.phone, c.gstin).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
+                                Text(IdProof.printable(c).joinToString(" · ").ifBlank { "No ID proof saved" }, style = MaterialTheme.typography.labelSmall,
+                                    color = if (IdProof.hasAny(c)) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
                                 if (c.remarks.isNotBlank()) Text(c.remarks, style = MaterialTheme.typography.labelSmall, maxLines = 1,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -282,6 +289,11 @@ fun CustomersScreen(me: UserProfile, nav: NavController) {
         var address by remember(c) { mutableStateOf(c.address) }
         var gstin by remember(c) { mutableStateOf(c.gstin) }
         var remarks by remember(c) { mutableStateOf(c.remarks) }
+        var aadhaar by remember(c) { mutableStateOf(c.aadhaar) }
+        var passport by remember(c) { mutableStateOf(c.passport) }
+        var voter by remember(c) { mutableStateOf(c.voterId) }
+        var dl by remember(c) { mutableStateOf(c.drivingLicence) }
+        var problem by remember(c) { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { editing = null },
             title = { Text(if (c.id.isBlank()) "New customer" else "Customer") },
@@ -293,12 +305,24 @@ fun CustomersScreen(me: UserProfile, nav: NavController) {
                     OutlinedTextField(address, { address = it }, label = { Text("Address") }, minLines = 2, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(gstin, { gstin = it.uppercase().take(15) }, label = { Text("GSTIN") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(remarks, { remarks = it }, label = { Text("Remarks") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                    Text("ID proof — enter at least one", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(aadhaar, { v -> aadhaar = IdProof.formatAadhaar(v.filter { it.isDigit() }.take(12)) }, label = { Text("Aadhaar number") },
+                        singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(passport, { passport = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(8) }, label = { Text("Passport no.") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(voter, { voter = it.uppercase().filter { ch -> ch.isLetterOrDigit() }.take(10) }, label = { Text("Voter ID") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(dl, { dl = it.uppercase().take(20) }, label = { Text("Driving licence no.") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 }
             },
             confirmButton = {
                 TextButton(enabled = name.isNotBlank(), onClick = {
-                    val out = c.copy(name = name.trim(), phone = phone.trim(), email = email.trim(), address = address.trim(),
-                        gstin = gstin.trim(), remarks = remarks.trim(), stateCode = Billing.stateFromGstin(gstin).ifBlank { c.stateCode })
+                    val out = IdProof.normalise(c.copy(name = name.trim(), phone = phone.trim(), email = email.trim(), address = address.trim(),
+                        gstin = gstin.trim(), remarks = remarks.trim(), stateCode = Billing.stateFromGstin(gstin).ifBlank { c.stateCode },
+                        aadhaar = aadhaar.trim(), passport = passport.trim(), voterId = voter.trim(), drivingLicence = dl.trim()))
+                    problem = IdProof.problem(out)
+                    if (problem != null) return@TextButton
                     editing = null
                     scope.launch { runCatching { Repo.saveCustomer(out) }.onFailure { Share.toast(ctx, it.message ?: "Couldn't save") } }
                 }) { Text("Save") }

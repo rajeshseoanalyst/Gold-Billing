@@ -1,6 +1,9 @@
 package com.digiglobal.goldbill.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -11,6 +14,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.digiglobal.goldbill.data.*
 import com.digiglobal.goldbill.ui.*
@@ -33,6 +39,8 @@ fun OwnerConsoleScreen(onBack: () -> Unit) {
     var deleteUser by remember { mutableStateOf<UserProfile?>(null) }
     var busy by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    var newShop by remember { mutableStateOf(false) }
+    val invites by remember { Repo.invitesFlow() }.collectAsState(initial = emptyList())
     if (showExport) {
         ReportScreen(Repo.me, null, emptyList(), ownerMode = true, onBack = { showExport = false })
         return
@@ -53,6 +61,28 @@ fun OwnerConsoleScreen(onBack: () -> Unit) {
                     KpiTile("Shops", orgs.size.toString(), Icons.Filled.Business, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
                     KpiTile("Users", users.size.toString(), Icons.Filled.People, MaterialTheme.colorScheme.secondary, Modifier.weight(1f))
                     KpiTile("Suspended", orgs.count { it.suspended }.toString(), Icons.Filled.Block, MaterialTheme.colorScheme.error, Modifier.weight(1f))
+                }
+            }
+            item {
+                Button(onClick = { newShop = true }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.AddBusiness, null); Spacer(Modifier.width(8.dp)); Text("New shop & admin login")
+                }
+            }
+            if (invites.isNotEmpty()) {
+                item { Text("Waiting for the admin's first sign-in", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold) }
+                items(invites, key = { "i_" + it.email }) { inv ->
+                    SectionCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(inv.shopName, fontWeight = FontWeight.SemiBold)
+                                Text("${inv.name} · ${inv.email}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Sets up when they sign in with this email", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            IconButton(onClick = { scope.launch { runCatching { Repo.deleteInvite(inv.email) } } }) {
+                                Icon(Icons.Filled.Delete, "Cancel", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                 }
             }
             if (busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -109,6 +139,12 @@ fun OwnerConsoleScreen(onBack: () -> Unit) {
                                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                                if (m.approved) TextButton(onClick = {
+                                    scope.launch {
+                                        runCatching { Repo.setRole(m.uid, if (m.isAdmin) "user" else "admin") }
+                                            .onFailure { Share.toast(ctx, it.message ?: "Couldn't update") }
+                                    }
+                                }) { Text(if (m.isAdmin) "Make user" else "Make admin", style = MaterialTheme.typography.labelSmall) }
                                 IconButton(onClick = { deleteUser = m }) { Icon(Icons.Filled.PersonRemove, "Remove user", tint = MaterialTheme.colorScheme.error) }
                             }
                         }
@@ -138,6 +174,19 @@ fun OwnerConsoleScreen(onBack: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+    }
+
+    if (newShop) NewShopDialog(onDismiss = { newShop = false }) { shop, name, phone, email, pass ->
+        newShop = false; busy = true
+        scope.launch {
+            runCatching { Repo.ownerCreateShop(shop, name, phone, email, pass) }
+                .onSuccess { created ->
+                    Share.toast(ctx, if (created) "$shop created. The admin can sign in now with $email."
+                        else "$shop saved. It's set up the first time $email signs in to the app.")
+                }
+                .onFailure { Share.toast(ctx, it.message ?: "Couldn't create the shop") }
+            busy = false
         }
     }
 
@@ -184,4 +233,43 @@ fun OwnerConsoleScreen(onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = { deleteUser = null }) { Text("Cancel") } }
         )
     }
+}
+
+@Composable
+private fun NewShopDialog(onDismiss: () -> Unit, onCreate: (shop: String, name: String, phone: String, email: String, password: String) -> Unit) {
+    var shop by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var show by remember { mutableStateOf(false) }
+    val emailOk = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$").matches(email.trim())
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New shop & admin") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(shop, { shop = it }, label = { Text("Shop name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(name, { name = it }, label = { Text("Admin's name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(phone, { phone = it }, label = { Text("Admin's mobile") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(email, { email = it.trim() }, label = { Text("Admin's login email") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth(),
+                    isError = email.isNotBlank() && !emailOk)
+                OutlinedTextField(pass, { pass = it }, label = { Text("Password for the admin (min 6)") }, singleLine = true,
+                    visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = { IconButton(onClick = { show = !show }) { Icon(if (show) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null) } },
+                    modifier = Modifier.fillMaxWidth(), isError = pass.isNotEmpty() && pass.length < 6)
+                Text("The admin signs in with this email and password and the shop is ready. " +
+                    "If the email already has a login (for example Call CRM), the shop is set up the first time they sign in with their own password. " +
+                    "Nothing in the shop shows who created it.",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = shop.isNotBlank() && name.isNotBlank() && emailOk && (pass.isEmpty() || pass.length >= 6),
+                onClick = { onCreate(shop.trim(), name.trim(), phone.trim(), email.trim(), pass) }) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
