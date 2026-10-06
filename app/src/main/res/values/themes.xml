@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.GoldBilling" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#FFB71C24</item>
+        <item name="android:navigationBarColor">#FFFFFFFF</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+    <color name="bg">#FFF7F7F8</color>
+    <color name="brand">#FFE3262F</color>
+</resources>

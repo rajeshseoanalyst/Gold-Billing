@@ -1,0 +1,226 @@
+package com.digiglobal.goldbill.data
+
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.UserProfileChangeRequest
+import com.google.firebase.firestore.DocumentReference
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.tasks.await
+
+/**
+ * All reads and writes. Collections are prefixed "gb_" so this app can share a Firebase
+ * project with Call CRM without the two apps' data ever mixing.
+ */
+object Repo {
+    val auth: FirebaseAuth get() = FirebaseAuth.getInstance()
+    val db: FirebaseFirestore get() = FirebaseFirestore.getInstance()
+    val uid: String? get() = auth.currentUser?.uid
+
+    /** Signed-in user's profile; set by the UI before any shop screen opens. */
+    @Volatile var me: UserProfile? = null
+
+    private fun users() = db.collection("gb_users")
+    private fun orgs() = db.collection("gb_orgs")
+    private fun codes() = db.collection("gb_codes")
+    private fun orgDoc(orgId: String? = null) = orgs().document(orgId ?: me?.orgId?.ifBlank { null } ?: "__none")
+    private fun invoices(orgId: String? = null) = orgDoc(orgId).collection("invoices")
+    private fun customers() = orgDoc().collection("customers")
+    private fun settings(orgId: String? = null) = orgDoc(orgId).collection("settings")
+
+    private fun now() = System.currentTimeMillis()
+
+    // ---------------- streams ----------------
+
+    private fun <T> docFlow(ref: DocumentReference, map: (DocumentSnapshot) -> T): Flow<T> = callbackFlow {
+        val reg = ref.addSnapshotListener { snap, _ -> if (snap != null) trySend(map(snap)) }
+        awaitClose { reg.remove() }
+    }
+
+    private fun <T> queryFlow(q: Query, map: (DocumentSnapshot) -> T): Flow<List<T>> = callbackFlow {
+        val reg = q.addSnapshotListener { snap, err ->
+            if (snap != null) trySend(snap.documents.map(map)) else if (err != null) trySend(emptyList())
+        }
+        awaitClose { reg.remove() }
+    }
+
+    fun authFlow(): Flow<FirebaseUser?> = callbackFlow {
+        val l = FirebaseAuth.AuthStateListener { trySend(it.currentUser) }
+        auth.addAuthStateListener(l)
+        awaitClose { auth.removeAuthStateListener(l) }
+    }
+
+    fun profileFlow(uid: String): Flow<UserProfile?> = docFlow(users().document(uid)) { if (it.exists()) it.toUser() else null }
+    fun orgFlow(orgId: String): Flow<Org?> = docFlow(orgs().document(orgId)) { if (it.exists()) it.toOrg() else null }
+    fun teamFlow(): Flow<List<UserProfile>> = queryFlow(users().whereEqualTo("orgId", me?.orgId ?: "__none")) { it.toUser() }
+
+    fun shopFlow(): Flow<ShopSettings> = docFlow(settings().document("shop")) { it.toShop() }
+    fun ratesFlow(): Flow<Rates> = docFlow(settings().document("rates")) { it.toRates() }
+    fun customersFlow(): Flow<List<Customer>> = queryFlow(customers()) { it.toCustomer() }
+    fun invoiceFlow(id: String): Flow<Invoice?> = docFlow(invoices().document(id)) { if (it.exists()) it.toInvoice() else null }
+
+    /** Billing users only ever load their own invoices (the security rules enforce this too). */
+    fun myInvoicesFlow(uid: String): Flow<List<Invoice>> = queryFlow(invoices().whereEqualTo("createdBy", uid)) { it.toInvoice() }
+
+    /** Admin: every invoice of the shop since a time. */
+    fun shopInvoicesFlow(since: Long): Flow<List<Invoice>> =
+        queryFlow(invoices().whereGreaterThanOrEqualTo("at", since)) { it.toInvoice() }
+
+    // ---------------- one-shot reads ----------------
+
+    suspend fun getUser(id: String): UserProfile? = runCatching { users().document(id).get().await().takeIf { it.exists() }?.toUser() }.getOrNull()
+    suspend fun shop(orgId: String? = null): ShopSettings = runCatching { settings(orgId).document("shop").get().await().toShop() }.getOrDefault(ShopSettings())
+    suspend fun invoicesSince(orgId: String, since: Long): List<Invoice> =
+        invoices(orgId).whereGreaterThanOrEqualTo("at", since).get().await().documents.map { it.toInvoice() }
+    suspend fun myInvoicesSince(since: Long): List<Invoice> {
+        val id = uid ?: return emptyList()
+        return invoices().whereEqualTo("createdBy", id).get().await().documents.map { it.toInvoice() }.filter { it.at >= since }
+    }
+
+    suspend fun checkOwner(): Boolean = runCatching { db.collection("gb_platform").document("owner").get().await(); true }.getOrDefault(false)
+
+    // ---------------- auth & company ----------------
+
+    suspend fun signIn(email: String, pass: String) { auth.signInWithEmailAndPassword(email.trim(), pass).await() }
+
+    suspend fun signUp(name: String, email: String, pass: String) {
+        val user = auth.createUserWithEmailAndPassword(email.trim(), pass).await().user ?: error("Sign-up failed")
+        runCatching { user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(name.trim()).build()).await() }
+    }
+
+    suspend fun signOut() { me = null; auth.signOut() }
+
+    private fun newProfile(orgId: String, name: String, phone: String, role: String, approved: Boolean, photo: String) = mapOf(
+        "orgId" to orgId, "name" to name.trim(), "email" to (auth.currentUser?.email ?: ""), "phone" to phone.trim(),
+        "role" to role, "approved" to approved, "photo" to photo
+    )
+
+    private val codeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    private fun randomCode() = (1..6).map { codeChars.random() }.joinToString("")
+
+    suspend fun createCompany(shopName: String, name: String, phone: String, logo: String, photo: String) {
+        val id = uid ?: error("Not signed in")
+        val orgRef = orgs().document()
+        var done = false
+        repeat(5) {
+            if (done) return@repeat
+            val code = randomCode()
+            val codeRef = codes().document(code)
+            done = db.runTransaction { tx ->
+                if (tx.get(codeRef).exists()) return@runTransaction false
+                tx.set(orgRef, mapOf("name" to shopName.trim(), "code" to code, "createdBy" to id, "createdAt" to now(),
+                    "suspended" to false, "logo" to logo))
+                tx.set(codeRef, mapOf("orgId" to orgRef.id))
+                tx.set(users().document(id), newProfile(orgRef.id, name, phone, "admin", true, photo))
+                true
+            }.await()
+        }
+        if (!done) error("Couldn't create the company, please try again")
+        me = getUser(id)
+        runCatching { settings().document("shop").set(ShopSettings(name = shopName.trim(), phone = phone.trim()).toMap()).await() }
+    }
+
+    suspend fun joinCompany(code: String, name: String, phone: String, photo: String) {
+        val id = uid ?: error("Not signed in")
+        val clean = code.trim().uppercase().filter { it.isLetterOrDigit() }
+        if (clean.length < 4) error("Enter the shop code your admin gave you")
+        val orgId = codes().document(clean).get().await().getString("orgId") ?: error("No shop found with code $clean")
+        users().document(id).set(newProfile(orgId, name, phone, "user", false, photo)).await()
+    }
+
+    suspend fun leaveCompany() { uid?.let { users().document(it).delete().await() }; me = null }
+
+    // ---------------- team & profile ----------------
+
+    suspend fun setApproved(userId: String, approved: Boolean) { users().document(userId).update("approved", approved).await() }
+    suspend fun setRole(userId: String, role: String) { users().document(userId).update("role", role).await() }
+    suspend fun removeUser(userId: String) { users().document(userId).delete().await() }
+    suspend fun setMyPhoto(photo: String) { uid?.let { users().document(it).update("photo", photo).await() } }
+    suspend fun setMyName(name: String) { uid?.let { users().document(it).update("name", name.trim()).await() } }
+    suspend fun setOrgLogo(orgId: String, logo: String) { orgs().document(orgId).update("logo", logo).await() }
+    suspend fun setOrgName(orgId: String, name: String) { orgs().document(orgId).update("name", name.trim()).await() }
+
+    // ---------------- settings ----------------
+
+    suspend fun saveShop(s: ShopSettings) { settings().document("shop").set(s.toMap()).await() }
+    suspend fun saveRates(r: Rates) {
+        settings().document("rates").set(r.copy(updatedAt = now(), updatedBy = me?.name ?: "").toMap()).await()
+    }
+
+    // ---------------- customers ----------------
+
+    /** Saves or updates a customer; the 10-digit phone number is the key, so repeat customers are found again. */
+    suspend fun saveCustomer(c: Customer): Customer {
+        val digits = c.phone.filter { it.isDigit() }.takeLast(10)
+        val ref = when {
+            c.id.isNotBlank() -> customers().document(c.id)
+            digits.length == 10 -> customers().document(digits)
+            else -> customers().document()
+        }
+        ref.set(c.toMap() + mapOf("updatedAt" to now()), SetOptions.merge()).await()
+        return c.copy(id = ref.id)
+    }
+
+    suspend fun deleteCustomer(id: String) { customers().document(id).delete().await() }
+
+    // ---------------- invoices ----------------
+
+    /**
+     * Saves a new invoice with the next number of its series (e.g. INV/2026-27/0012).
+     * Numbers come from a counter in a transaction, so two users never get the same number.
+     */
+    suspend fun createInvoice(draft: Invoice, shop: ShopSettings): Invoice {
+        val meNow = me ?: error("Not signed in")
+        val at = now()
+        val kind = draft.kind
+        val prefix = Billing.seriesPrefix(kind, shop)
+        val fy = Billing.financialYear(at)
+        val key = "${prefix}_$fy".replace("/", "-")
+        val counterRef = settings().document("counters")
+        val ref = invoices().document()
+        val customer = if (draft.customer.phone.isNotBlank() || draft.customer.name.isNotBlank())
+            runCatching { saveCustomer(draft.customer) }.getOrDefault(draft.customer) else draft.customer
+        val saved = db.runTransaction { tx ->
+            val snap = tx.get(counterRef)
+            val next = ((snap.get(key) as? Number)?.toLong() ?: 0L) + 1
+            val inv = draft.copy(
+                id = ref.id, number = Billing.formatNumber(prefix, fy, next), at = at, customer = customer,
+                createdBy = meNow.uid, createdByName = meNow.name, status = "active",
+                gstRate = shop.gstRate, terms = draft.terms.ifBlank { shop.terms }
+            )
+            tx.set(counterRef, mapOf(key to next), SetOptions.merge())
+            tx.set(ref, inv.toMap())
+            inv
+        }.await()
+        return saved
+    }
+
+    /** Admin only: an invoice is never deleted, only marked cancelled (keeps the number series intact). */
+    suspend fun cancelInvoice(id: String, reason: String) {
+        invoices().document(id).update(mapOf("status" to "cancelled", "cancelReason" to reason, "cancelledAt" to now(),
+            "cancelledBy" to (me?.name ?: ""))).await()
+    }
+
+    // ---------------- owner (super-admin) ----------------
+
+    fun allOrgsFlow(): Flow<List<Org>> = queryFlow(orgs()) { it.toOrg() }
+    fun allUsersFlow(): Flow<List<UserProfile>> = queryFlow(users()) { it.toUser() }
+    suspend fun allOrgsOnce(): List<Org> = orgs().get().await().documents.map { it.toOrg() }
+    suspend fun setOrgSuspended(orgId: String, suspended: Boolean) { orgs().document(orgId).update("suspended", suspended).await() }
+
+    suspend fun deleteOrg(org: Org) {
+        val root = orgs().document(org.id)
+        val refs = mutableListOf<DocumentReference>()
+        for (sub in listOf("invoices", "customers", "settings")) root.collection(sub).get().await().documents.forEach { refs += it.reference }
+        users().whereEqualTo("orgId", org.id).get().await().documents.forEach { refs += it.reference }
+        if (org.code.isNotBlank()) refs += codes().document(org.code)
+        refs.chunked(400).forEach { chunk -> db.batch().apply { chunk.forEach { delete(it) } }.commit().await() }
+        root.delete().await()
+    }
+
+}

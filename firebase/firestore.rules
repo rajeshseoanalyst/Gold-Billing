@@ -1,0 +1,170 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ▼▼▼ PUT YOUR OWN EMAIL HERE (the app owner / super-admin). Register this email in the app first. ▼▼▼
+    function isOwner() {
+      return request.auth != null && request.auth.token.email in ['YOUR-EMAIL@example.com'];
+    }
+    // ▲▲▲
+
+    function signedIn() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function orgPath(orgId) { return /databases/$(database)/documents/orgs/$(orgId); }
+    function hasProfile() { return signedIn() && exists(userPath(request.auth.uid)); }
+    function me() { return get(userPath(request.auth.uid)).data; }
+
+    // Approved member of this company, and the company isn't suspended.
+    function member(orgId) {
+      return hasProfile() && me().orgId == orgId && me().approved == true
+        && get(orgPath(orgId)).data.suspended != true;
+    }
+    function orgAdmin(orgId) { return member(orgId) && me().role == 'admin'; }
+
+    // Only the owner can read this; the app uses it to know whether to show the owner console.
+    match /platform/{doc} {
+      allow read: if isOwner();
+    }
+
+    // Join codes: anyone signed in can look up one code, nobody can list them.
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && getAfter(orgPath(request.resource.data.orgId)).data.createdBy == request.auth.uid;
+      allow delete: if isOwner();
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && (
+        request.auth.uid == uid || isOwner() ||
+        (hasProfile() && me().approved == true && me().orgId == resource.data.orgId));
+      allow list: if isOwner() ||
+        (hasProfile() && me().approved == true && resource.data.orgId == me().orgId);
+
+      allow create: if signedIn() && request.auth.uid == uid && (
+        // Joining with a code: starts as an unapproved agent.
+        (request.resource.data.role == 'agent' && request.resource.data.approved == false
+          && exists(orgPath(request.resource.data.orgId))) ||
+        // Creating a company: becomes its admin.
+        (request.resource.data.role == 'admin' && request.resource.data.approved == true
+          && getAfter(orgPath(request.resource.data.orgId)).data.createdBy == request.auth.uid)
+      );
+
+      allow update: if isOwner()
+        || (orgAdmin(resource.data.orgId) && request.resource.data.orgId == resource.data.orgId)
+        || (request.auth.uid == uid
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.approved == resource.data.approved
+            && request.resource.data.orgId == resource.data.orgId);
+
+      allow delete: if isOwner() || request.auth.uid == uid || orgAdmin(resource.data.orgId);
+    }
+
+    match /orgs/{orgId} {
+      allow get: if isOwner() || (hasProfile() && me().orgId == orgId);
+      allow list: if isOwner();
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.suspended == false;
+      allow update: if isOwner() || (orgAdmin(orgId)
+        && request.resource.data.suspended == resource.data.suspended
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.createdBy == resource.data.createdBy);
+      allow delete: if isOwner();
+
+      // Round-robin counter for auto lead allocation.
+      match /settings/allocation {
+        allow read, write: if member(orgId);
+      }
+      // Pipeline stages, custom fields, AI keys.
+      match /settings/{doc} {
+        allow read: if member(orgId) || isOwner();
+        allow write: if orgAdmin(orgId);
+        allow delete: if isOwner();
+      }
+      match /leads/{id} {
+        allow read, create, update: if member(orgId);
+        allow delete: if orgAdmin(orgId) || isOwner();
+        allow read: if isOwner();
+      }
+      match /activities/{id} {
+        allow read, create, update: if member(orgId);
+        allow delete: if orgAdmin(orgId) || isOwner();
+        allow read: if isOwner();
+      }
+      match /templates/{id} {
+        allow read, write: if member(orgId);
+        allow read, delete: if isOwner();
+      }
+    }
+
+    // =====================================================================
+    //  GOLD BILLING APP  (collections start with gb_ — separate from Call CRM)
+    // =====================================================================
+    function gbUserPath(uid) { return /databases/$(database)/documents/gb_users/$(uid); }
+    function gbOrgPath(orgId) { return /databases/$(database)/documents/gb_orgs/$(orgId); }
+    function gbHasProfile() { return signedIn() && exists(gbUserPath(request.auth.uid)); }
+    function gbMe() { return get(gbUserPath(request.auth.uid)).data; }
+    function gbMember(orgId) {
+      return gbHasProfile() && gbMe().orgId == orgId && gbMe().approved == true
+        && get(gbOrgPath(orgId)).data.suspended != true;
+    }
+    function gbAdmin(orgId) { return gbMember(orgId) && gbMe().role == 'admin'; }
+
+    match /gb_platform/{doc} { allow read: if isOwner(); }
+
+    match /gb_codes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && getAfter(gbOrgPath(request.resource.data.orgId)).data.createdBy == request.auth.uid;
+      allow delete: if isOwner();
+    }
+
+    match /gb_users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isOwner() ||
+        (gbHasProfile() && gbMe().approved == true && gbMe().orgId == resource.data.orgId));
+      allow list: if isOwner() || (gbHasProfile() && gbMe().approved == true && resource.data.orgId == gbMe().orgId);
+      allow create: if signedIn() && request.auth.uid == uid && (
+        (request.resource.data.role == 'user' && request.resource.data.approved == false && exists(gbOrgPath(request.resource.data.orgId))) ||
+        (request.resource.data.role == 'admin' && request.resource.data.approved == true
+          && getAfter(gbOrgPath(request.resource.data.orgId)).data.createdBy == request.auth.uid));
+      allow update: if isOwner()
+        || (gbAdmin(resource.data.orgId) && request.resource.data.orgId == resource.data.orgId)
+        || (request.auth.uid == uid && request.resource.data.role == resource.data.role
+            && request.resource.data.approved == resource.data.approved && request.resource.data.orgId == resource.data.orgId);
+      allow delete: if isOwner() || request.auth.uid == uid || gbAdmin(resource.data.orgId);
+    }
+
+    match /gb_orgs/{orgId} {
+      allow get: if isOwner() || (gbHasProfile() && gbMe().orgId == orgId);
+      allow list: if isOwner();
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid && request.resource.data.suspended == false;
+      allow update: if isOwner() || (gbAdmin(orgId)
+        && request.resource.data.suspended == resource.data.suspended
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.createdBy == resource.data.createdBy);
+      allow delete: if isOwner();
+
+      // Bill number counters: every member needs to take the next number.
+      match /settings/counters { allow read, write: if gbMember(orgId); }
+      // Shop details and today's rates: everyone reads, only the admin changes.
+      match /settings/{doc} {
+        allow read: if gbMember(orgId) || isOwner();
+        allow write: if gbAdmin(orgId);
+        allow delete: if isOwner();
+      }
+      match /customers/{id} {
+        allow read, create, update: if gbMember(orgId);
+        allow delete: if gbAdmin(orgId) || isOwner();
+        allow read: if isOwner();
+      }
+      // Bills: users create their own and see ONLY their own; admins see all and can cancel.
+      match /invoices/{id} {
+        allow create: if gbMember(orgId) && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'active';
+        allow read: if gbAdmin(orgId) || isOwner()
+          || (gbMember(orgId) && resource.data.createdBy == request.auth.uid);
+        allow update: if gbAdmin(orgId);
+        allow delete: if isOwner();
+      }
+    }
+  }
+}
