@@ -125,7 +125,9 @@ fun LoginScreen() {
                     try {
                         if (signUp) Repo.signUp(name, email, pass) else Repo.signIn(email, pass)
                     } catch (e: Exception) {
-                        error = e.localizedMessage ?: "Something went wrong"
+                        error = if (signUp && e is com.google.firebase.auth.FirebaseAuthUserCollisionException)
+                            "This email already has an account (it may be your Call CRM login). Tap 'Sign in' and use that same email and password."
+                        else e.localizedMessage ?: "Something went wrong"
                         busy = false
                     }
                 }
